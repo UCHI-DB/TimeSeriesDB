@@ -34,6 +34,7 @@ use tokio::prelude::*;
 use tokio::runtime::{Builder};
 use futures::sync::oneshot;
 use std::sync::{Arc,Mutex};
+use std::convert::TryFrom;
 
 mod buffer_pool;
 mod dictionary;
@@ -49,8 +50,13 @@ mod btree;
 mod lcce;
 mod kernel;
 mod compression_demon;
+mod zeromq_client;
+mod dispatcher;
 
 use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
+use zeromq_client::ZMQClient;
+use dispatcher::{ZMQDispatcher,make_zmqs};
+use std::sync::atomic::{AtomicBool, Ordering};
 use ndarray::Array2;
 use rustfft::FFTnum;
 use num::Float;
@@ -597,6 +603,8 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 	let mut testdict = None;
 
+	let mut zmq_dispatcher: Option<ZMQDispatcher<T>> = None;
+
 	for client_config in config.lookup("clients")
 		.expect("At least one client must be provided")
 		.as_table()
@@ -633,7 +641,10 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 				}
 				None => RunPeriod::Indefinite,
 			};
-
+			
+			// Variables to pass to ZMQ Dispatcher/Client creations (as tokio::Interval doesn't implement Clone)
+			let mut freq_start: Option<Instant> = None;
+			let mut freq_interval: Option<Duration> = None;
 			let frequency = match client_config.lookup("interval") {
 				Some(table) => {
 					let secs = match table.lookup("sec") {
@@ -661,6 +672,10 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 					};
 
 					let start = Instant::now() + Duration::new(start_secs,start_nano_secs);
+
+					freq_start = Some(start);
+					freq_interval = Some(interval);
+
 					Frequency::Delayed(Interval::new(start,interval))
 				}
 				None => Frequency::Immediate,
@@ -768,14 +783,46 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 						None => panic!("Buffer and File manager provided not supported yet"),
 					}
 				}
+				"zmq" => {
+					let params = client_config.lookup("params").expect("The file client must provide a params table");
+					let num_clients_i64 = params.lookup("num_clients")
+											.expect("The number of clients that will be received must be specified")
+											.as_integer()
+											.expect("The number of clients must be provided as an integer");
+					let num_clients = usize::try_from(num_clients_i64).unwrap(); // Will panic if num_clients doesn't fit in usize
+					let port = params.lookup("port")
+								.expect("The port to receive data from must be specified")
+								.as_integer()
+								.expect("The port must be provided as an integer") as u16;
+					let zmq_clients = match dispatcher::make_zmqs::<T>(num_clients, port, amount, run_period, frequency, freq_start, freq_interval) {
+						(zmq_d, zmq_c) => {
+							zmq_dispatcher = Some(zmq_d); // Possible lifetime concerns?
+							zmq_c
+						}
+					};
+					
+					for zmq_c in zmq_clients {
+						match &buf_option {
+							Some(buf) => signals.push(Box::new(BufferedSignal::new(signal_id, zmq_c, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+							None => panic!("Buffer and File manager provided not supported yet"),
+						}
+					}
+				}
 				x => panic!("The provided type, {:?}, is not currently supported", x),
 			}
 			signal_id = rng.gen();
 		}
 
-
-	let mut kernel = Kernel::new(testdict.clone().unwrap(),1,4,30);
-	kernel.rbfdict_pre_process();
+	
+	/* 
+	 *
+	 *
+	 *	UNCOMMENT THE BELOW TWO LINES
+	 *
+	 *
+	 */
+	//let mut kernel = Kernel::new(testdict.clone().unwrap(),1,4,30);
+	//kernel.rbfdict_pre_process();
 
 	//let mut comps:Vec<CompressionDemon<_,DB,_>> = Vec::new();
 	let batch = 20;
@@ -889,6 +936,18 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		spawn_handles.push(oneshot::spawn(sig, &executor))
 	}
 
+	// TODO: is AtomicBool necessary?
+	let dispatcher_continue = Arc::new(AtomicBool::new(true));
+	let zmq_handle = match zmq_dispatcher {
+		Some(d) => {
+			let dispatcher_continue_t = Arc::clone(&dispatcher_continue);
+			Some(thread::spawn(move || {
+				&d.run(dispatcher_continue_t);
+			}))
+		}
+		None => None
+	};
+
 
 //	let handle1 = thread::spawn(move || {
 //		println!("Run compression demon 1" );
@@ -909,6 +968,14 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 			_ => println!("Failed to produce a timestamp"),
 		}
 	}
+	match zmq_handle {
+		Some(handle) => {
+			(*dispatcher_continue).store(false, Ordering::Release);
+			handle.join().unwrap();
+		}
+		None => ()
+	};
+	
 
 	//handle.join().unwrap();
 	//handle1.join().unwrap();

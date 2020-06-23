@@ -44,6 +44,7 @@ croaring = "0.4.4"
 rust_decimal = "1.5.0"
 parquet = ""
 libc = "0.2"
+zmq = "0.9"
 
 
 [build-dependencies]
