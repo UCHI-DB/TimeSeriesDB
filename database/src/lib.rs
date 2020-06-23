@@ -50,12 +50,12 @@ mod btree;
 mod lcce;
 mod kernel;
 mod compression_demon;
-mod zeromq_client;
+mod remote_stream;
 mod dispatcher;
 
 use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
-use zeromq_client::ZMQClient;
-use dispatcher::{ZMQDispatcher,make_zmqs};
+use remote_stream::RemoteStream;
+use dispatcher::{ZMQDispatcher,make_remote_streams};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ndarray::Array2;
 use rustfft::FFTnum;
@@ -794,16 +794,17 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 								.expect("The port to receive data from must be specified")
 								.as_integer()
 								.expect("The port must be provided as an integer") as u16;
-					let zmq_clients = match dispatcher::make_zmqs::<T>(num_clients, port, amount, run_period, frequency, freq_start, freq_interval) {
-						(zmq_d, zmq_c) => {
+					let remote_streams = match dispatcher::make_remote_streams::<T>(num_clients, port, amount, run_period, frequency, freq_start, freq_interval) {
+						(zmq_d, rs) => {
 							zmq_dispatcher = Some(zmq_d); // Possible lifetime concerns?
-							zmq_c
+							rs
 						}
 					};
 					
-					for zmq_c in zmq_clients {
+					// remote_stream is Box::<RemoteStream<T>>
+					for remote_stream in remote_streams {
 						match &buf_option {
-							Some(buf) => signals.push(Box::new(BufferedSignal::new(signal_id, zmq_c, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+							Some(buf) => signals.push(Box::new(BufferedSignal::new(signal_id, remote_stream, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
 							None => panic!("Buffer and File manager provided not supported yet"),
 						}
 					}

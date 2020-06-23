@@ -6,16 +6,16 @@ use std::fmt::Debug;
 
 use crate::client::*;
 
-pub fn zmqclient_from_receiver<T>(queue: Receiver<T>, amount: Amount, run_period: RunPeriod,
+pub fn remote_stream_from_receiver<T>(queue: Receiver<T>, amount: Amount, run_period: RunPeriod,
 			   frequency: Frequency)
-                -> ZMQClient<T>
+                -> RemoteStream<T>
 {
 	let produced = match amount {
 		Amount::Limited(_) => Some(0),
 		Amount::Unlimited  => None,
 	};
 
-	ZMQClient { 
+	RemoteStream { 
 		queue: Mutex::new(queue),
 		amount: amount,
 		run_period: run_period,
@@ -32,7 +32,7 @@ pub fn zmqclient_from_receiver<T>(queue: Receiver<T>, amount: Amount, run_period
  * 		One solution is to implement a separate SPSC queue with Sync trait
  * 		Question would be how to implement non-blocking stuff in Rust (because simultaneous access is forbidden?)?
  */
-pub struct ZMQClient<T> 
+pub struct RemoteStream<T> 
 {
 	queue: Mutex<Receiver<T>>,
 	amount: Amount,
@@ -45,7 +45,7 @@ pub struct ZMQClient<T>
 /* Max time limit/amount handling, almost the same as client.rs
  * Currently the CLIENT (the futures with queues) handles when to exit
  * and the main function is expected to tell dispatcher to exit */
-impl<T> Stream for ZMQClient<T> where T: Debug
+impl<T> Stream for RemoteStream<T> where T: Debug
 {
 	type Item = T;
 	type Error = ();

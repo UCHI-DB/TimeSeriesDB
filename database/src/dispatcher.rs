@@ -1,5 +1,5 @@
 use crate::client::*;
-use crate::zeromq_client::{ZMQClient, zmqclient_from_receiver};
+use crate::remote_stream::{RemoteStream, remote_stream_from_receiver};
 extern crate bincode;
 
 // Initialization of Receivers
@@ -24,7 +24,7 @@ use serde::de::DeserializeOwned;
 pub struct ZMQDispatcher<T>
 {
     num_clients: usize,
-    client_queues: Vec<Sender<T>>,
+    stream_queues: Vec<Sender<T>>,
     port: u16,
 }
 
@@ -56,21 +56,21 @@ fn copy_params(amount: &Amount, run_period: &RunPeriod, frequency: &Frequency,
     (copied_amount, copied_period, copied_freq)
 }
 
-pub fn make_zmqs<T>(num_clients: usize, port: u16, amount: Amount, run_period: RunPeriod,
+pub fn make_remote_streams<T>(num_clients: usize, port: u16, amount: Amount, run_period: RunPeriod,
                 frequency: Frequency, freq_start: Option<Instant>, freq_interval: Option<Duration>)
-                -> (ZMQDispatcher<T>, Vec<Box<ZMQClient<T>>>)
+                -> (ZMQDispatcher<T>, Vec<Box<RemoteStream<T>>>)
 {
-    let mut client_queues: Vec<Sender<T>> = Vec::with_capacity(num_clients);
-    let mut clients: Vec<Box<ZMQClient<T>>> = Vec::with_capacity(num_clients);
+    let mut stream_queues: Vec<Sender<T>> = Vec::with_capacity(num_clients);
+    let mut clients: Vec<Box<RemoteStream<T>>> = Vec::with_capacity(num_clients);
     for _i in 0..num_clients {
         let (send, recv) = channel::<T>();
-        client_queues.push(send);
+        stream_queues.push(send);
         let (copied_amount, copied_period, copied_freq) = copy_params(&amount, &run_period, &frequency, &freq_start, &freq_interval);
-        clients.push(Box::new(zmqclient_from_receiver::<T>(recv, copied_amount, copied_period, copied_freq)));
+        clients.push(Box::new(remote_stream_from_receiver::<T>(recv, copied_amount, copied_period, copied_freq)));
     }
     let dispatcher = ZMQDispatcher {
         num_clients: num_clients,
-        client_queues: client_queues,
+        stream_queues: stream_queues,
         port: port,
     };
     (dispatcher, clients)
@@ -79,13 +79,14 @@ pub fn make_zmqs<T>(num_clients: usize, port: u16, amount: Amount, run_period: R
 impl<T> ZMQDispatcher<T>
     where T: Copy + Send + Sync + DeserializeOwned + Debug + From<f32>
 {
+    // TODO throw the error up - return Ok() or Err()
     fn push_to_queue(&self, index: usize, data: &[u8], recv_size: usize) {
         // TODO handle recv_size: what if larger than 1024?
         match bincode::deserialize::<Vec<T>>(&data[0..recv_size]) {
             Ok(data) => {
                 println!("{:?}", data); // For testing
                 for x in data {
-                    match self.client_queues[index].send(x) {
+                    match self.stream_queues[index].send(x) {
                         Ok(()) => (),
                         Err(e) => {
                             // Send error... do something robust here?
@@ -116,6 +117,9 @@ impl<T> ZMQDispatcher<T>
         
         /* TODO
          * Don't forget to uncomment the 2 lines in lib.rs!
+         * 
+         * -1) Fix 
+         * 
          * 0) The copy_params is very unnecessary. Possible to get around by just implementing Copy trait
          *      in client.rs. Right now tokio::Interval does not implement Copy trait, so we do it this way
          * 1) Various client communications.
