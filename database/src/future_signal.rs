@@ -122,7 +122,7 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 		let mut bsize = 0;
 		loop {
 			match self.signal.poll() {
-				Ok(Async::NotReady) => return Ok(Async::NotReady),
+				Ok(Async::NotReady) => (),
 				Ok(Async::Ready(None)) => {
 					let elapse: Duration = self.start.unwrap().elapsed();
 					if self.compress_on_segmentation {
@@ -202,6 +202,7 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 					}
 
 					/* Always add the newly received data  */
+					println!("ID {} receieved {:?}", self.signal_id, value);
 					self.data.push(value);
 					self.segments_produced += 1;
 					match cur_time.duration_since(self.timestamp.unwrap()) {

@@ -54,8 +54,11 @@ mod remote_stream;
 mod dispatcher;
 
 use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
-use remote_stream::RemoteStream;
-use dispatcher::{ZMQDispatcher,make_remote_streams};
+use remote_stream::remote_stream_from_receiver;
+use dispatcher::ZMQDispatcher;
+use std::collections::{HashMap,HashSet};
+use std::collections::hash_map::RandomState;
+use futures::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ndarray::Array2;
 use rustfft::FFTnum;
@@ -603,7 +606,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 	let mut testdict = None;
 
-	let mut zmq_dispatcher: Option<ZMQDispatcher<T>> = None;
+	let mut remote_clients: HashMap<u64, Sender<T>, RandomState> = HashMap::new();
 
 	for client_config in config.lookup("clients")
 		.expect("At least one client must be provided")
@@ -783,30 +786,32 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 						None => panic!("Buffer and File manager provided not supported yet"),
 					}
 				}
-				"zmq" => {
-					let params = client_config.lookup("params").expect("The file client must provide a params table");
-					let num_clients_i64 = params.lookup("num_clients")
-											.expect("The number of clients that will be received must be specified")
-											.as_integer()
-											.expect("The number of clients must be provided as an integer");
-					let num_clients = usize::try_from(num_clients_i64).unwrap(); // Will panic if num_clients doesn't fit in usize
-					let port = params.lookup("port")
-								.expect("The port to receive data from must be specified")
-								.as_integer()
-								.expect("The port must be provided as an integer") as u16;
-					let remote_streams = match dispatcher::make_remote_streams::<T>(num_clients, port, amount, run_period, frequency, freq_start, freq_interval) {
-						(zmq_d, rs) => {
-							zmq_dispatcher = Some(zmq_d); // Possible lifetime concerns?
-							rs
+				"remote" => {
+					signal_id = client_config.lookup("id")
+						.expect("Signal ID required for remote clients")
+						.as_integer()
+						.expect("If an ID for a client is provided it must be supplied as an integer") as u64;
+					let buffer = match client_config.lookup("params") {
+						Some(p) => {
+							match p.lookup("buffer_size") {
+								Some(size) => {
+									// TODO make unwrap display something meaningful (like saying "buffer size too large")
+									usize::try_from(size.as_integer().expect("Buffer size must be provided as an integer")).unwrap()
+								}
+								None => 20, // Default buffer size
+							}
 						}
+						None => 20, // Default buffer size
 					};
+
+
+					let (mut sender, mut receiver) = channel::<T>(buffer);
+					//let remote_stream = Box::new(remote_stream_from_receiver::<T>(receiver, amount, run_period));
+					remote_clients.insert(signal_id, sender);
 					
-					// remote_stream is Box::<RemoteStream<T>>
-					for remote_stream in remote_streams {
-						match &buf_option {
-							Some(buf) => signals.push(Box::new(BufferedSignal::new(signal_id, remote_stream, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
-							None => panic!("Buffer and File manager provided not supported yet"),
-						}
+					match &buf_option {
+						Some(buf) => signals.push(Box::new(BufferedSignal::new(signal_id, receiver, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+						None => panic!("Buffer and File manager provided not supported yet"),
 					}
 				}
 				x => panic!("The provided type, {:?}, is not currently supported", x),
@@ -815,15 +820,45 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		}
 
 	
-	/* 
-	 *
-	 *
-	 *	UNCOMMENT THE BELOW TWO LINES
-	 *
-	 *
-	 */
-	//let mut kernel = Kernel::new(testdict.clone().unwrap(),1,4,30);
-	//kernel.rbfdict_pre_process();
+	// Creating dispatchers
+	remote_clients.shrink_to_fit();
+	let mut dispatchers: Vec<ZMQDispatcher<T>> = Vec::new();
+	if remote_clients.len() > 0 {
+		let ports: HashSet<u16> = HashSet::with_capacity(remote_clients.len());
+		for dispatcher_config in config.lookup("dispatchers")
+			.expect("Dispatcher must be provided if there is a remote client")
+			.as_table()
+			.expect("The clients must be provided as a TOML table").values()
+		{
+			let dis_id = match dispatcher_config.lookup("id") {
+				Some(id) => id.as_integer().expect("If an ID for a client is provided it must be supplied as an integer") as u64,
+				None => rng.gen(),
+			};
+
+			let port = dispatcher_config.lookup("port")
+							.expect("The port to receive data from must be specified")
+							.as_integer()
+							.expect("The port must be provided as an integer") as u16;
+			
+			if ports.contains(&port) {
+				println!("Duplicate port {:?}, dispatcher {:?} will be skipped", port, dis_id);
+			} else {
+				dispatchers.push(ZMQDispatcher::new(dis_id, remote_clients.clone(), port));
+			}
+		}
+		if dispatchers.is_empty() {
+			panic!("At least one dispatcher must be provided if there is a remote client");
+		}
+	}
+	
+	match testdict {
+		None => (),
+		d => {
+			let mut kernel = Kernel::new(d.clone().unwrap(),1,4,30);
+			kernel.rbfdict_pre_process();
+		}
+	}
+	
 
 	//let mut comps:Vec<CompressionDemon<_,DB,_>> = Vec::new();
 	let batch = 20;
@@ -937,17 +972,16 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		spawn_handles.push(oneshot::spawn(sig, &executor))
 	}
 
-	// TODO: is AtomicBool necessary?
-	let dispatcher_continue = Arc::new(AtomicBool::new(true));
-	let zmq_handle = match zmq_dispatcher {
-		Some(d) => {
-			let dispatcher_continue_t = Arc::clone(&dispatcher_continue);
-			Some(thread::spawn(move || {
-				&d.run(dispatcher_continue_t);
-			}))
-		}
-		None => None
-	};
+	let mut dispatcher_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(dispatchers.len());
+	let mut dispatcher_continue: Vec<Arc<AtomicBool>> = Vec::with_capacity(dispatchers.len()); // TODO mutable needed?
+	while dispatchers.len() > 0 {
+		let mut dispatcher= dispatchers.pop().unwrap();
+		let dispatcher_cont_t = Arc::new(AtomicBool::new(true));
+		dispatcher_continue.push(Arc::clone(&dispatcher_cont_t));
+		dispatcher_handles.push(thread::spawn(move || {
+			&dispatcher.run(dispatcher_cont_t);
+		}))
+	}
 
 
 //	let handle1 = thread::spawn(move || {
@@ -969,13 +1003,13 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 			_ => println!("Failed to produce a timestamp"),
 		}
 	}
-	match zmq_handle {
-		Some(handle) => {
-			(*dispatcher_continue).store(false, Ordering::Release);
-			handle.join().unwrap();
-		}
-		None => ()
-	};
+	for end_flag in dispatcher_continue {
+		end_flag.store(false, Ordering::Release);
+	}
+	for dispatcher_handle in dispatcher_handles {
+		dispatcher_handle.join().unwrap();
+	}
+	
 	
 
 	//handle.join().unwrap();

@@ -5,7 +5,7 @@ extern crate bincode;
 extern crate futures;
 extern crate toml_loader;
 
-use zmq::Message;
+use zmq::{Message, Socket};
 
 use std::thread::sleep;
 use std::time::Duration;
@@ -17,7 +17,7 @@ use std::str::FromStr;
 use std::fmt::Debug;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use bincode::serialize;
+use bincode::{deserialize, serialize};
 
 use toml_loader::{Loader};
 use std::path::Path;
@@ -43,19 +43,16 @@ pub struct Config
 }
 
 /* TODO
- * 1) Get client.rs and load_config() working together! Implement reading files/generating data
- * 2) Detect connection drop
- * 3) Issue in the main DB, but protocol for handling sent data limit
- * 4) Do something useful with initial "acknowledgement"
- * 5) Rust technicals: how to do proper array initialization (without doing [0; 5]), proper array returning
+ * 1) Detect connection drop
+ * 2) Issue in the main DB, but protocol for handling sent data limit
+ * 3) Do something useful with initial "acknowledgement"
  */ 
-pub fn run_client<T>(config_file: &str) where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug
-{
-    let context = zmq::Context::new();
-    let requester = context.socket(zmq::DEALER).unwrap();
+pub fn run_client(config_file: &str) {
     
     let config = load_config(config_file);
 
+    let context = zmq::Context::new();
+    let requester = context.socket(zmq::DEALER).unwrap();
     requester.set_identity(&config.id).unwrap();
 
     // Attempt to connect every five seconds
@@ -67,33 +64,55 @@ pub fn run_client<T>(config_file: &str) where T: Copy + Send + Sync + Serialize 
         }
     }
     
-    // TODO Do something with this
-    // TODO Make sure it doesn't hang
-    requester.send(Message::from("hello"), 0).unwrap();
-    let mut msg = zmq::Message::new();
-    requester.recv(&mut msg, 0).unwrap();
+    // TODO Can loop to repeatedly send dummy data until server sends proper type configuration
+    requester.send(Message::from(""), 0).unwrap();
+    let mut msg = Message::new();
+    let init_msg_size = match requester.recv(&mut msg, 0) {
+        Ok(size) => size,
+        Err(_e) => {
+            panic!("Error: Failed to receive inital message from server");
+        }
+    };
+    // End loop
     match msg.as_str() {
-        Some(s) => { println!("{}", s) }
-        _ => ()
+        Some(format_type) => {
+            match format_type {
+                "f32" => {
+                    println!("Connected to server, type f32");
+                    serialized_and_send::<f32>(requester);
+                }
+                "f64" => {
+                    println!("Connected to server, type f64");
+                    serialized_and_send::<f64>(requester);
+                }
+                _ => {
+                    panic!("Error: received wrong data type");
+                }
+            }
+        }
+        None => {
+            panic!("Error: Failed to receive inital message from server");
+        }
+        
     }
- 
-    // Serialize and send data
-    // TODO Handling serialized data size
-    let mut msg: [u8; 128] = [0; 128];
+}
+
+fn serialized_and_send<T>(requester: Socket) where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug {
+    let five_sec = Duration::from_secs(5);
     loop {
         let data = get_data::<T>();
         let serialized = serialize(&data).unwrap();
-
         requester.send(&serialized, 0).unwrap();
+        println!("Sent {:?}", data);
         sleep(five_sec);
     }
 }
 
-fn get_data<T>() -> Vec<T>
+fn get_data<T>() -> Vec<(u64, T)>
     where T: Copy + Send + Sync + Serialize + DeserializeOwned + From<f32> + Debug
 {
     // TODO get something from file/gen
-    let numbers: Vec<T> = vec![T::from(50.555), T::from(2.1), T::from(3.2), T::from(4.3)];
+    let numbers: Vec<(u64, T)> = vec![(10, T::from(50.555)), (11, T::from(2.1)), (12, T::from(3.2)), (13, T::from(4.3))];
     numbers
 }
 
@@ -143,6 +162,7 @@ pub fn load_config(config_file: &str) -> Config
             idarr
         }
         None => {
+            // Random ID
             let mut idarr: [u8; 5] = [0; 5];
             for i in 0..5 {
                 idarr[i] = random::<u8>();
