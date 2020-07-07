@@ -22,6 +22,8 @@ use bincode::{deserialize, serialize};
 use toml_loader::{Loader};
 use std::path::Path;
 
+use rand::rngs::{ThreadRng};
+use rand::{Rng, SeedableRng, StdRng, thread_rng};
 use rand::distributions::Uniform;
 
 mod client;
@@ -99,11 +101,14 @@ pub fn run_client(config_file: &str) {
 
 fn serialized_and_send<T>(requester: Socket) where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug {
     let five_sec = Duration::from_secs(5);
+    let mut i: u64 = 0;
+    let seed = thread_rng().gen::<u64>();
     loop {
-        let data = get_data::<T>();
+        let data = get_random_data::<T>(seed, i as f32);
         let serialized = serialize(&data).unwrap();
         requester.send(&serialized, 0).unwrap();
         println!("Sent {:?}", data);
+        i += 1;
         sleep(five_sec);
     }
 }
@@ -115,6 +120,18 @@ fn get_data<T>() -> Vec<(u64, T)>
     let numbers: Vec<(u64, T)> = vec![(10, T::from(50.555)), (11, T::from(2.1)), (12, T::from(3.2)), (13, T::from(4.3))];
     numbers
 }
+
+// For testing
+fn get_random_data<T>(seed: u64, i: f32) -> Vec<(u64, T)>
+    where T: Copy + Send + Sync + Serialize + DeserializeOwned + From<f32> + Debug
+{
+    let mut rng: StdRng = SeedableRng::seed_from_u64(seed);
+    let numbers: Vec<(u64, T)> = vec![(10, T::from(rng.gen_range::<f32, f32, f32>(0.0, 100.0) + i)), (11, T::from(rng.gen_range::<f32, f32, f32>(0.0, 100.0) + i)),
+                                        (12, T::from(rng.gen_range::<f32, f32, f32>(0.0, 100.0) + i)), (13, T::from(rng.gen_range::<f32, f32, f32>(0.0, 100.0) + i))];
+    numbers
+}
+
+
 
 pub fn load_config(config_file: &str) -> Config
 {
