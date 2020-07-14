@@ -120,6 +120,7 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 	fn poll(&mut self) -> Poll<Option<SystemTime>,()> {
 		let mut batch_vec: Vec<T> = Vec::new();
 		let mut bsize = 0;
+		self.start = Some(Instant::now());
 		loop {
 			match self.signal.poll() {
 				Ok(Async::NotReady) => (),
@@ -202,7 +203,7 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 					}
 
 					/* Always add the newly received data  */
-					println!("ID {} receieved {:?}", self.signal_id, value);
+					//println!("ID {} receieved {:?}", self.signal_id, value);
 					self.data.push(value);
 					self.segments_produced += 1;
 					match cur_time.duration_since(self.timestamp.unwrap()) {

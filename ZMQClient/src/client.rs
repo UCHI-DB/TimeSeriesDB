@@ -1,21 +1,20 @@
+use tokio::time::Interval;
+
+use futures::stream::{Stream, iter};
+use futures::task::{Context, Poll};
+use core::pin::Pin;
+
 use std::marker::PhantomData;
 use serde::de::DeserializeOwned;
-use futures::stream::iter_ok;
+
+use std::io::{BufReader,BufRead};
 use std::str::FromStr;
 use std::fs::File;
-use std::io::{BufReader,BufRead};
+
 use rand::distributions::*;
 use rand::prelude::*;
 
-use tokio::prelude::*;
-
-
-use ndarray::{Array1, Array2};
-
-
-// Implements a Client struct with trait Stream
-// Basically a stripped version of client.rs in the main DB
-// Can be replaced by the actual client.rs with minimal adjustments
+/* use ndarray::{Array2}; */
 
 #[derive(PartialEq)]
 pub enum Amount {
@@ -23,49 +22,92 @@ pub enum Amount {
 	Unlimited,
 }
 
+pub enum Frequency {
+	Immediate,
+	Delayed(Interval),
+}
+
+
 pub struct Client<T,U> 
-	where T: Stream<Item=U,Error=()>
+	where T: Stream<Item=U>
 {
 	producer: T,
 	amount: Amount,
-	produced: Option<u64>,
+	frequency: Frequency,
+	produced: u64,
 }
 
-impl<T,U> Stream for Client<T,U> 
-	where T: Stream<Item=U,Error=()>
+pub fn client_from_stream<T,U>(producer: T, amount: Amount, frequency: Frequency)
+			    -> impl Stream<Item=U>
+	where T: Stream<Item=U> + Unpin,
 {
-	type Item = U;
-	type Error = ();
-
-	fn poll(&mut self) -> Poll<Option<U>,()> {
-		/* Terminate stream if hit max production */
-		if let Amount::Limited(max_items) = self.amount {
-			if let Some(items) = self.produced {
-				if items >= max_items { return Ok(Async::Ready(None)) }
-			}
-		}
-		let poll_val = try_ready!(self.producer.poll());
-		Ok(Async::Ready(poll_val))
+	Client { 
+		producer: producer,
+		amount: amount,
+		frequency: frequency,
+		produced: 0,
 	}
 }
 
-
-pub fn client_from_iter<T,U>(producer: T, amount: Amount) -> impl Stream<Item=U,Error=()>
+pub fn client_from_iter<T,U>(producer: T, amount: Amount, frequency: Frequency)
+				    -> impl Stream<Item=U>
 	where T: Iterator<Item=U>
 {
-	let produced = match amount {
-		Amount::Limited(_) => Some(0),
-		Amount::Unlimited  => None,
-	};
-
 	Client { 
-		producer:iter_ok(producer),
+		producer: iter(producer),
 		amount: amount,
-		produced: produced
+		frequency: frequency,
+		produced: 0,
 	}
 }
 
-/* File Clients */
+
+impl<T: futures::Stream,U> Stream for Client<T,U> 
+	where T: Stream<Item=U> + Unpin
+{
+	type Item = U;
+
+	fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
+		/* Terminate stream if hit max production */
+		if let Amount::Limited(max_items) = self.amount {
+			if self.produced >= max_items { return Poll::Ready(None) }
+		}
+
+		/* Either poll to determine if enough time has passed or
+		 * immediately get the value depending on Frequency Mode
+		 * Must call poll on the stream within the client
+		 */
+		let this_client = self.get_mut();
+		match this_client.frequency {
+			Frequency::Immediate => {
+				match Pin::new(&mut this_client.producer).poll_next(cx) {
+					Poll::Ready(value) => {
+						this_client.produced += 1;
+						Poll::Ready(value)
+					}
+					x => { x }
+				}
+			}
+			Frequency::Delayed(ref mut interval) => {
+				match Stream::poll_next(Pin::new(interval), cx) {
+					Poll::Pending => Poll::Pending,
+					Poll::Ready(_) =>  {
+						match Pin::new(&mut this_client.producer).poll_next(cx) {
+							Poll::Ready(value) => {
+								this_client.produced += 1;
+								Poll::Ready(value)
+							}
+							x => { x }
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+
+
 
 fn construct_file_iterator<T>(file: &str, delim: u8) -> Result<impl Iterator<Item=T>,()> 
 	where T: DeserializeOwned
@@ -150,37 +192,33 @@ pub fn construct_file_iterator_int_signed(file: &str, skip_val: usize, delim: ch
 	)
 }
 
-pub fn construct_file_client<T>(file: &str, delim: u8, amount: Amount)
-						 -> Result<impl Stream<Item=T,Error=()>,()> 
-	where T: DeserializeOwned + FromStr
+
+
+pub fn construct_file_client<T>(file: &str, delim: u8, amount: Amount, frequency: Frequency)
+						 -> Result<impl Stream<Item=T>,()> 
+	where T: DeserializeOwned
 {
 	let producer = construct_file_iterator::<T>(file, delim)?;
-	Ok(client_from_iter(producer, amount))
+	Ok(client_from_iter(producer, amount, frequency))
 }
 
-pub fn construct_file_client_skip_newline<T>(file: &str, skip_val: usize, delim: char, amount: Amount)
-				    	 -> Result<impl Stream<Item=T,Error=()>,()>
-	where T: FromStr + DeserializeOwned
+/* An example of how to combine an iterator and IterClient constructor */
+pub fn construct_file_client_skip_newline<T>(file: &str, skip_val: usize, delim: char, amount: Amount, frequency: Frequency)
+				    	 -> Result<impl Stream<Item=T>,()>
+	where T: FromStr,
 {
 	let producer = construct_file_iterator_skip_newline::<T>(file, skip_val, delim)?;
-	Ok(client_from_iter(producer, amount))
+	Ok(client_from_iter(producer, amount, frequency))
 }
 
 
-
-
-/* Gen Client */
-
-pub fn construct_gen_client<T,U,V>(dist: U, amount: Amount) 
-		-> impl Stream<Item=V,Error=()>
-	where V: From<T>,
-		  U: Distribution<T>,
-{
-	let producer = BasicItemGenerator::new(dist);
-	client_from_iter(producer, amount)
-}
-
-
+/* First approach at enabling a framework for random generation 
+ * Failed because f32 does not implement From<f64>
+ * This lack of implementation prevents coverting f64 values 
+ * which is the only type supported by rusts normal distribution
+ * So this framework won't work for a f32 database setting with a 
+ * normal distribution generator client
+ */
 pub struct BasicItemGenerator<T,U,V>
 	where V: From<T>,
 		  U: Distribution<T>,
@@ -216,6 +254,16 @@ impl<T,U,V> Iterator for BasicItemGenerator<T,U,V>
 	}
 }
 
+pub fn construct_gen_client<T,U,V>(dist: U, 
+		amount: Amount, frequency: Frequency) 
+			-> impl Stream<Item=V>
+		where V: From<T>,
+			  U: Distribution<T>,
+
+{
+	let producer = BasicItemGenerator::new(dist);
+	client_from_iter(producer, amount, frequency)
+}
 
 pub struct NormalDistItemGenerator<V>
 	where V: From<f32>,
@@ -247,18 +295,16 @@ impl<V> Iterator for NormalDistItemGenerator<V>
 	}
 }
 
-
-
-pub fn construct_normal_gen_client<T>(mean: f64, std: f64, amount: Amount)
-		-> impl Stream<Item=T,Error=()> 
+pub fn construct_normal_gen_client<T>(mean: f64, std: f64, amount: Amount, frequency: Frequency)
+		-> impl Stream<Item=T> 
 	where T: From<f32>,
 {
 	let producer = NormalDistItemGenerator::<T>::new(mean,std);
-	client_from_iter(producer, amount)
+	client_from_iter(producer, amount, frequency)
 }
 
 
-pub fn read_dict<T>(filename: &str, delim: char) -> Array2<T>
+/* pub fn read_dict<T>(filename: &str, delim: char) -> Array2<T>
 	where T: FromStr{
 	//let filename = "src/main.rs";
 	// Open the file in read-only mode (ignoring errors).
@@ -281,4 +327,4 @@ pub fn read_dict<T>(filename: &str, delim: char) -> Array2<T>
 	}
 	let size = vec.len()/llen;
 	Array2::from_shape_vec((size,llen),vec).unwrap()
-}
+} */

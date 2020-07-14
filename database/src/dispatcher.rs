@@ -40,7 +40,7 @@ impl<T> ZMQDispatcher<T>
         // TODO handle recv_size: what if larger than 1024?
         match bincode::deserialize::<Vec<(u64, T)>>(&data[0..recv_size]) {
             Ok(data) => {
-                println!("Dispatcher received at port {}: {:?}", self.port, data); // For testing
+                //println!("Dispatcher received at port {}: {:?}", self.port, data); // For testing
                 for (sig_id, x) in data {
                     match self.stream_queues.get_mut(&sig_id) {
                         Some(ref mut sender) => {
@@ -148,9 +148,23 @@ impl<T> ZMQDispatcher<T>
             // Dummy data strategy
             match router.recv_into(&mut data, 0) {
                 Ok(size) => {
-                    if size <= 1 {
+                    if size <= 0 {
+                        // Initialization
                         router.send(&identity[0..id_size], SNDMORE).unwrap();
                         router.send(type_name::<T>(), 0).unwrap();
+                    } else if size <= 1 {
+                        // ONLY FOR PERFORMANCE TESTING - in a multiple client scenario, we cannot just close the signals
+                        // Requires single dispatcher, in multiple case all dispatchers must be closed
+                        // Finish
+                        // Most recent version of futures should use close_channel
+                        for (sig_id, sender_opt) in self.stream_queues.iter_mut() {
+                            drop(sender_opt);
+                            /* match self.stream_queues.remove(&sig_id) {
+                                Some(ref mut sender) => { drop(sender); }
+                                None => { () }
+                            } */
+                        }
+                        return;
                     } else if size > 1024 {
                         println!("Dispatcher {}: Truncation", self.id);
                     } else {
