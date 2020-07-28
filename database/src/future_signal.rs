@@ -132,6 +132,7 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 					} else {
 						//self.buffer.lock().unwrap().flush();
 						println!("Signal: {}\n Segments produced: {}\n Data points in total {} \n Time: {:?}\n Throughput: {:?} points/second", self.signal_id, (self.segments_produced as usize)/self.seg_size, self.segments_produced, elapse, (self.segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
+						println!("{},{:?},{:?}", self.segments_produced, elapse, (self.segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
 					}
 					
 					return Ok(Async::Ready(self.prev_seg_offset))

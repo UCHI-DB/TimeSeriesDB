@@ -155,52 +155,60 @@ type = "Clock" # Necessary, required to indicate what buffer should be used
 #		mean = 0.0 # Sets the mean
 #		std = 1.0 # Sets the standard deviation
 
-	[clients.client1]
-	id = 909937
-	type = "gen"
-	gen_type = "normal"
-
-		[clients.client1.run_period]
-		sec = 30
-
-		[clients.client1.params]
-		mean = 0.0 # Sets the mean
-		std = 1.0 # Sets the standard deviation
-
-
-	# An instance of generator client that never ends
-	[clients.client2]
-	id = 3370
-	type = "gen"
-	gen_type = "normal"
-	# Must be set to true if you want to create a client like this
-	# This was done so that a client that never dies is only made
-	# intentionally. If the client has some termination condition
-	# like amount or run period then you do not need to set this value
-        [clients.client2.run_period]
-        		sec = 30
-
-
-		[clients.client2.params]
-		mean = 0.0 # Sets the mean
-		std = 1.0 # Sets the standard deviation
-
-
-	# An instance of file client that uses the UCRArchive files
-	[clients.client0]
-	type = "file" # used to indicate that it should be a file
-		[clients.client0.params]
-		path = "../UCRArchive2018/Trace/Trace_TEST" #path to file
-		dict = "../UCRArchive2018/Kernel//dict.tsv" #path to dictionary fil
-		reader_type = "NewlineAndSkip" # The type of file reader to use
-		delim = "," # The delimiter between each value
-		skip = 1 # How many values to initially skip
-
-	# An instance of file client that contains deseralized values
-	# delimited by something
+#	[clients.client1]
+#	id = 909937
+#	type = "gen"
+#	gen_type = "normal"
+#
+#		[clients.client1.run_period]
+#		sec = 30
+#
+#		[clients.client1.params]
+#		mean = 0.0 # Sets the mean
+#		std = 1.0 # Sets the standard deviation
+#
+#
+#	# An instance of generator client that never ends
+#	[clients.client2]
+#	id = 3370
+#	type = "gen"
+#	gen_type = "normal"
+#	# Must be set to true if you want to create a client like this
+#	# This was done so that a client that never dies is only made
+#	# intentionally. If the client has some termination condition
+#	# like amount or run period then you do not need to set this value
+#        [clients.client2.run_period]
+#        		sec = 30
+#
+#
+#		[clients.client2.params]
+#		mean = 0.0 # Sets the mean
+#		std = 1.0 # Sets the standard deviation
+#
+#
+#	# An instance of file client that uses the UCRArchive files
+#	[clients.client0]
+#	type = "file" # used to indicate that it should be a file
+#		[clients.client0.params]
+#		path = "../UCRArchive2018/Trace/Trace_TEST" #path to file
+#		dict = "../UCRArchive2018/Kernel//dict.tsv" #path to dictionary fil
+#		reader_type = "NewlineAndSkip" # The type of file reader to use
+#		delim = "," # The delimiter between each value
+#		skip = 1 # How many values to initially skip
+#
+#	# An instance of file client that contains deseralized values
+#	# delimited by something
 #	[clients.client5]
 #	type = "file"
 #		[clients.client5.params]
 #		path = "path"
 #		reader_type = "DeserializeDelim"
 #		delim = ","
+	[clients.client0]
+	id = 10
+	type = "remote" # used to indicate that it should be a file
+
+[dispatchers]
+	[dispatchers.dispatcher0]
+	id = 100
+	port = 5555

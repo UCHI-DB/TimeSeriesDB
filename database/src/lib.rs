@@ -59,6 +59,7 @@ use remote_stream::remote_stream_from_receiver;
 use dispatcher::ZMQDispatcher;
 use std::collections::{HashMap,HashSet};
 use std::collections::hash_map::RandomState;
+use fnv::{FnvHashMap, FnvBuildHasher};
 use futures::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ndarray::Array2;
@@ -74,7 +75,7 @@ use crate::methods::Methods::Fourier;
 use crate::methods::gorilla_encoder::GorillaEncoder;
 
 const DEFAULT_BUF_SIZE: usize = 150;
-const DEFAULT_MPSC_BUF_SIZE: usize = 25;
+const DEFAULT_MPSC_BUF_SIZE: usize = 2000;
 const DEFAULT_DELIM: char = '\n';
 
 pub fn run_test<T: 'static>(config_file: &str)
@@ -511,7 +512,8 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 	/* Client loading */
 	let mut signals: Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>> = Vec::new();
-	let mut remote_clients: HashMap<u64, Sender<T>, RandomState> = HashMap::new();
+	//let mut remote_clients: HashMap<u64, Sender<T>, RandomState> = HashMap::new();
+	let mut remote_clients =  FnvHashMap::default();
 	match load_clients(&config, &mut signals, &mut remote_clients, &buf_option) {
 		// testdict
 		None => (),
@@ -862,7 +864,7 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
  */
 fn load_clients<T>(config: &Value,
 	signals: &mut Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>>,
-	remote_clients: &mut HashMap<u64, Sender<T>, RandomState>,
+	remote_clients: &mut HashMap<u64, Sender<T>, FnvBuildHasher>,
 	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,)
 	-> Option<Array2<T>>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
@@ -1023,7 +1025,7 @@ fn load_clients<T>(config: &Value,
 	testdict
 }
 
-fn load_dispatchers<T>(config: &Value, remote_clients: HashMap<u64, Sender<T>, RandomState>) -> Vec<ZMQDispatcher<T>>
+fn load_dispatchers<T>(config: &Value, remote_clients: HashMap<u64, Sender<T>, FnvBuildHasher>) -> Vec<ZMQDispatcher<T>>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FromStr + From<f32>,
 {
 	let mut rng = thread_rng();

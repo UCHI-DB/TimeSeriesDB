@@ -35,7 +35,10 @@ use client::{construct_gen_client, construct_normal_gen_client};
 
 const DEFAULT_DELIM: char = '\n';
 
-
+/* Dummy Client to interface with Dispatcher
+ * Argument 1: config file to use (config file syntax is similar to that of client config for the main DB)
+ * Argument 2: number of data points to send per ZMQ message (i.e. size of vector that is being sent each time)
+ */
 
 /* TODO
  * 1) Detect connection drop
@@ -48,7 +51,7 @@ const DEFAULT_DELIM: char = '\n';
  * 
  * Check other TODOs in the code
  */ 
-pub fn run_client(config_file: &str)
+pub fn run_client(config_file: &str, send_size: usize)
 {
     
     let config = load_config(config_file);
@@ -82,11 +85,11 @@ pub fn run_client(config_file: &str)
             match format_type {
                 "f32" => {
 					println!("Connected to server, type f32");	
-                    block_on(begin_async::<f32>(&config.config, requester));
+                    block_on(begin_async::<f32>(&config.config, requester, send_size));
                 }
                 "f64" => {
 					println!("Connected to server, type f64");
-					block_on(begin_async::<f64>(&config.config, requester));
+					block_on(begin_async::<f64>(&config.config, requester, send_size));
                 }
                 _ => {
                     panic!("Error: received wrong data type");
@@ -99,13 +102,12 @@ pub fn run_client(config_file: &str)
     }
 }
 
-async fn begin_async<T: 'static>(config: &Value, requester: Socket) where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
+async fn begin_async<T: 'static>(config: &Value, requester: Socket, send_size: usize) where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
 	let clients = load_clients::<T>(config);
 	let (send, mut recv) = channel::<(u64, T)>(2000);
 
-	let mut futures = vec![Box::pin(serialize_and_send(requester, &mut recv)) as Pin<Box<dyn Future<Output=()>>>];
-
+	let mut futures = vec![Box::pin(serialize_and_send(requester, &mut recv, send_size)) as Pin<Box<dyn Future<Output=()>>>];
 	for c in clients {
 		futures.push(Box::pin(client_async(c, send.clone())));
 	}
@@ -133,11 +135,21 @@ async fn client_async<T>(c: (u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>)
 }
 
 // Serialize and send to server
-async fn serialize_and_send<T>(requester: Socket, recv: &mut Receiver<(u64, T)>) 
+async fn serialize_and_send<T>(requester: Socket, recv: &mut Receiver<(u64, T)>, send_size: usize) 
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin {
+	/*
+	let dummy_data = vec![(10 as u64, T::from(1.0)), (10 as u64, T::from(1.2)), (10 as u64, T::from(1.3)), (10 as u64, T::from(1.5)), (10 as u64, T::from(1.0)), (10 as u64, T::from(1.2)), (10 as u64, T::from(1.3)), (10 as u64, T::from(1.5)), (10 as u64, T::from(1.0)), (10 as u64, T::from(1.2)), (10 as u64, T::from(1.3)), (10 as u64, T::from(1.5))];
+	let dummy = serialize(&dummy_data).unwrap();
+	for _i in 0..5000000 {
+		requester.send(&dummy, 0).unwrap();
+	}
+	requester.send(Message::from("F"), 0).unwrap(); // Indicates finished
+	println!("Finished");
+	return;
+	*/
 	loop {
 		let mut data: Vec<(u64, T)> = Vec::new();
-		for _i in 0..5 {
+		for _i in 0..send_size {
 			match recv.recv().await {
 				Some(value) => { data.push(value); }
 				None => {
@@ -151,7 +163,7 @@ async fn serialize_and_send<T>(requester: Socket, recv: &mut Receiver<(u64, T)>)
 		}
 		let serialized = serialize(&data).unwrap();
 		//println!("Sending {:?}", data);
-        requester.send(&serialized, 0).unwrap();
+	        requester.send(&serialized, 0).unwrap();
 	}
 }
 

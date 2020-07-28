@@ -1,0 +1,59 @@
+# comments in toml
+
+# Necesssary and must be an integer
+segment_size = 1000 # write this line before any [_] are encountered
+					# This ensures that the segment size can be read
+					# This will determine how much memory is allocated
+					# for each data collection of segments
+
+
+
+# Not-Necessary, but if one value is provided then the other
+# must also be set as well
+[runtime]
+core_threads = 8 # Indicates the number of cores to use
+blocking_threads = 100 # Indicates the max number of "futures"
+					   # that can be spawned on the constructed runtime
+
+
+# Currently Necessary, but the code exists to just change
+# mod enabling buffers without file_managers
+[file_handler]
+file_manager = "Rocks" # Necessary parameter used to indicate what fm to use
+	[file_handler.params] # Necessary, used to construct a
+						  # toml table for parameters
+	path = "../rocksdb" # Necessary, used by Rocks to construct the database
+
+
+# Currently Necessary, but the code exists to just change
+# mod enabling file_managers without buffers, or
+# signals just not storing values
+[buffer]
+buffer_size = 100 # Necessary, required to indicate how
+				  # many buffer entires should be created
+type = "Clock" # Necessary, required to indicate what buffer should be used
+
+
+# At least one client must be created, otherwise nothing would happen
+[clients]
+
+	[clients.client0]
+	id = 10
+	type = "remote" # used to indicate that it should be a file
+	[clients.client1]
+	id = 11
+	type = "remote" # used to indicate that it should be a file
+	[clients.client2]
+	id = 12
+	type = "remote" # used to indicate that it should be a file
+	[clients.client3]
+	id = 13
+	type = "remote" # used to indicate that it should be a file
+
+[dispatchers]
+	[dispatchers.dispatcher0]
+	id = 100
+	port = 5555
+	[dispatchers.dispatcher1]
+	id = 101
+	port = 5556

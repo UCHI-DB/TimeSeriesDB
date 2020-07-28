@@ -7,7 +7,8 @@ fn main() {
 	let args: Vec<String> = env::args().collect();
 
 	let config_file = &args[1];
-	run_client(config_file.as_str())
+	let send_size = &args[2].parse::<usize>().unwrap();
+	run_client(config_file.as_str(), *send_size)
 
 	/* match read_as.as_str() {
 		"f32" => run_client::<f32>(config_file.as_str()),

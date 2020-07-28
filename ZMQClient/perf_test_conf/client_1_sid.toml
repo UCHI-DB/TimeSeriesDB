@@ -1,11 +1,11 @@
 protocol = "tcp"
 address = "localhost"
-port = 5555
+port = 5556
 
 [clients.client0]
-    	id = 10
+    	id = 11
     	type = "gen"
-        amount = 100000000
+        amount = 50000000
     	gen_type = "normal"
 
     		[clients.client0.params]

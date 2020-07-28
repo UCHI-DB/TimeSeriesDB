@@ -8,9 +8,11 @@ use std::sync::Arc;
 // ZMQ client handling
 use zmq::SNDMORE;
 use std::collections::{HashMap,HashSet};
+use fnv::{FnvHashMap, FnvBuildHasher};
 use std::collections::hash_map::RandomState;
 // T Traits
 use std::fmt::Debug;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use std::any::type_name;
@@ -21,14 +23,14 @@ use std::any::type_name;
 pub struct ZMQDispatcher<T>
 {
     id: u64,
-    stream_queues: HashMap<u64, Sender<T>, RandomState>,
+    stream_queues: HashMap<u64, Sender<T>, FnvBuildHasher>,
     port: u16,
 }
 
 impl<T> ZMQDispatcher<T>
-    where T: Copy + Send + Sync + DeserializeOwned + Debug + From<f32>
+    where T: Copy + Send + Sync + DeserializeOwned + Debug + From<f32> + Serialize
 {
-    pub fn new(id: u64, stream_queues: HashMap<u64, Sender<T>, RandomState>, port: u16) -> ZMQDispatcher<T> {
+    pub fn new(id: u64, stream_queues: HashMap<u64, Sender<T>, FnvBuildHasher>, port: u16) -> ZMQDispatcher<T> {
         ZMQDispatcher {
             id: id,
             stream_queues: stream_queues,
@@ -85,9 +87,76 @@ impl<T> ZMQDispatcher<T>
         let mut clients: HashSet<[u8; 5]> = HashSet::new();
     
         let mut identity: [u8; 5] = [0; 5]; // Length of default ZMQ identity
-        let mut data: [u8; 1024] = [0; 1024];
+        let mut data: [u8; 4096] = [0; 4096];
         let mut id_size: usize;
         let mut recv_size: usize;
+	/*	
+	let test_vec = vec![(10 as u64, T::from(0.6942098025)),
+		(10 as u64, T::from(0.2363603626)), 
+		(10 as u64, T::from(0.7426826748)), 
+		(10 as u64, T::from(0.6549429643)), 
+		(10 as u64, T::from(0.6570997322)), 
+		(10 as u64, T::from(0.9376189143)), 
+		(10 as u64, T::from(0.3027290404)), 
+		(10 as u64, T::from(0.9612739095)), 
+		(10 as u64, T::from(0.4048058438)), 
+		(10 as u64, T::from(0.0791666921)), 
+		(10 as u64, T::from(0.5480497558)), 
+		(10 as u64, T::from(0.0791558033)), 
+		(10 as u64, T::from(0.0927286445)), 
+		(10 as u64, T::from(0.0916129725)), 
+		(10 as u64, T::from(0.8259950942)), 
+		(10 as u64, T::from(0.7093062181)), 
+		(10 as u64, T::from(0.0629796595)), 
+		(10 as u64, T::from(0.0633001504)), 
+		(10 as u64, T::from(0.3604035231)), 
+		(10 as u64, T::from(0.8389628904)), 
+		(10 as u64, T::from(0.7397309258)), 
+		(10 as u64, T::from(0.1714681204)), 
+		(10 as u64, T::from(0.3353240721)), 
+		(10 as u64, T::from(0.2571632450)), 
+		(10 as u64, T::from(0.7458096100)), 
+		(10 as u64, T::from(0.3890291011)), 
+		(10 as u64, T::from(0.8550782610)), 
+		(10 as u64, T::from(0.2099220916)), 
+		(10 as u64, T::from(0.6091594252)), 
+		(10 as u64, T::from(0.9053960369))];
+		
+		for i in 0..3333333 {
+	                for (sig_id, x) in &test_vec {
+	                    match self.stream_queues.get_mut(&sig_id) {
+	                        Some(ref mut sender) => {
+	                            loop {
+	                                match sender.try_send(*x) {
+	                                    Ok(()) => { break; },
+	                                    Err(e) => {
+	                                        // Send error
+	                                        if e.is_full() {
+	                                            continue; // Wait till exhausted
+	                                        } else if e.is_disconnected() {
+	                                            println!("Dispatcher cannot connect to queue {:?}", sig_id);
+	                                            break;
+	                                        } else {
+	                                            println!("{:?}", e);
+	                                            break;
+	                                        }
+	                                    }
+	                                }
+	                            }
+	                        }
+	                        None => {
+	                            // Unknown signal ID... do something robust here?
+	                            println!("Unknown signal ID {:?}", sig_id)
+	                        }
+	                    }
+	                }
+		}
+	
+	let test_data = bincode::serialize(&test_vec).unwrap();
+	let test_size = test_data.len();
+	let mut counter: u64 = 0;
+	*/
+	
         
         /* TODO
          * Don't forget to uncomment the 2 lines in lib.rs!
@@ -105,6 +174,21 @@ impl<T> ZMQDispatcher<T>
          *      - More data deserialized at once = better?
          *      - Is there a specific scheme planned for how client is going to send data? (ex. how often, how much, etc.)
          */
+	/*
+	while (*continue_status).load(Ordering::Acquire) {
+		if counter < 3333333 {
+			self.push_to_queue(&test_data, test_size);
+			counter += 1;
+		}
+		else {
+                        for (sig_id, sender_opt) in self.stream_queues.iter_mut() {
+                            drop(sender_opt);
+			}
+			return;	
+		}
+	};
+	*/
+	
         while (*continue_status).load(Ordering::Acquire) {
             // Receive data
             match router.recv_into(&mut identity, 0) {
@@ -116,35 +200,6 @@ impl<T> ZMQDispatcher<T>
                     continue;
                 }
             }
-            /*
-            // 1) Client hashing strategy
-            match router.recv_into(&mut data, 0) {
-                Ok(size) => {
-                    recv_size = size;
-                }
-                Err(_e) => {
-                    println!("Error: dispatcher could not process received data");
-                    continue;
-                }
-            }
-            
-            // Figure out identity
-            {
-                if clients.contains(&identity) {
-                    // Process incoming data (push to queue)
-                    if recv_size > 1024 {
-                        // TODO do something more substantial for truncated
-                        println!("Dispatcher {}: Truncation", self.id);
-                    }
-                    self.push_to_queue(&data, recv_size);
-                }
-                else {
-                    // New client
-                    clients.insert(identity);
-                    router.send(&identity[0..id_size], SNDMORE).unwrap();
-                    router.send(type_name::<T>(), 0).unwrap();
-                }
-            }  */
             // Dummy data strategy
             match router.recv_into(&mut data, 0) {
                 Ok(size) => {
@@ -165,7 +220,7 @@ impl<T> ZMQDispatcher<T>
                             } */
                         }
                         return;
-                    } else if size > 1024 {
+                    } else if size > 4096 {
                         println!("Dispatcher {}: Truncation", self.id);
                     } else {
                         self.push_to_queue(&data, size);
@@ -175,7 +230,7 @@ impl<T> ZMQDispatcher<T>
                     println!("Error: dispatcher could not process received data");
                     continue;
                 }
-            } 
+            }
         }
     }
 }
