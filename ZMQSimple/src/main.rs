@@ -3,6 +3,10 @@ use futures::future::join;
 use futures::stream::StreamExt;
 use futures::sink::SinkExt;
 use futures::executor::block_on;
+use futures::task::{Spawn, SpawnExt};
+use tokio::runtime::Builder;
+use futures::executor::ThreadPool;
+use futures::executor::ThreadPoolBuilder;
 use futures::channel::mpsc::{TryRecvError, Receiver, Sender, channel};
 use std::collections::{HashMap,HashSet};
 use fnv::{FnvHashMap, FnvBuildHasher};
@@ -14,6 +18,91 @@ use zmq::Socket;
  * Use with argument "a" for testing async, "t" for testing 2-thread setup
  */
 
+/* Deserial-only test */
+
+fn run_deserial_only(router: Socket) -> u64 {
+
+	let mut id = [0; 5];
+	let mut msg = [0; 4096];
+	let mut zmq_count: u64 = 0;
+
+	// Initial ZMQ Connection
+	router.recv_into(&mut id, 0).unwrap();
+	router.recv_into(&mut msg, 0).unwrap();
+	router.send(&id[0..5], zmq::SNDMORE).unwrap();
+	router.send("f32", 0).unwrap();
+	
+	// Main loop
+	loop {
+		router.recv_into(&mut id, 0).unwrap();
+		let recv_size = router.recv_into(&mut msg, 0).unwrap();
+		if recv_size <= 1 {
+			break;
+		}
+			
+		else {
+			// Deserialize
+			match bincode::deserialize::<Vec<(u64, f32)>>(&msg[0..recv_size]) {
+				Ok(data) => {
+					for (sig_id, x) in data {
+						zmq_count += 1;
+					}
+				}
+				Err(e) => {
+					println!("Deserialization error: {:?}", e)
+				}
+			}
+		}
+	}
+
+	zmq_count
+}
+
+/* Hash-only test */
+
+fn run_hash_only(mut receiver: Receiver<f32>, remote_clients: &mut FnvHashMap<u64, Sender<f32>>, router: Socket) -> u64 {
+
+	let mut id = [0; 5];
+	let mut msg = [0; 4096];
+	let mut zmq_count: u64 = 0;
+
+	// Initial ZMQ Connection
+	router.recv_into(&mut id, 0).unwrap();
+	router.recv_into(&mut msg, 0).unwrap();
+	router.send(&id[0..5], zmq::SNDMORE).unwrap();
+	router.send("f32", 0).unwrap();
+	
+	// Main loop
+	loop {
+		router.recv_into(&mut id, 0).unwrap();
+		let recv_size = router.recv_into(&mut msg, 0).unwrap();
+		if recv_size <= 1 {
+			break;
+		}
+			
+		else {
+			// Deserialize and hash
+			match bincode::deserialize::<Vec<(u64, f32)>>(&msg[0..recv_size]) {
+				Ok(data) => {
+					for (sig_id, x) in data {
+						zmq_count += 1;
+						match remote_clients.get_mut(&sig_id) {
+							Some(ref mut _sender) => (),
+							None => { println!("Signal ID not found!"); }
+						}
+					}
+				}
+				Err(e) => {
+					println!("Deserialization error: {:?}", e)
+				}
+			}
+		}
+	}
+	// Clear remote_clients to drop all senders so that the MPSC receiving thread will end
+	remote_clients.clear();
+
+	zmq_count
+}
 
 /* 2-thread MPSC queue setup */
 
@@ -93,12 +182,18 @@ fn run_sync(mut receiver: Receiver<f32>, remote_clients: &mut FnvHashMap<u64, Se
 async fn recv_async(mut receiver: Receiver<f32>) -> u64 {
 	let mut counter: u64 = 0;
 	while let Some(_x) = receiver.next().await {
+		/*
+		if counter % 100 == 0 {
+			println!("recv tid: {:?}", thread::current().id());
+		}
+		*/
+		
 		counter += 1;
 	}
 	counter
 }
 
-async fn send_async(remote_clients: &mut FnvHashMap<u64, Sender<f32>>, router: Socket) -> u64 {
+async fn send_async(mut remote_clients: FnvHashMap<u64, Sender<f32>>, router: Socket) -> u64 {
 	let mut id = [0; 5];
 	let mut msg = [0; 4096];
 	let mut zmq_count: u64 = 0;
@@ -111,6 +206,12 @@ async fn send_async(remote_clients: &mut FnvHashMap<u64, Sender<f32>>, router: S
 	
 	// Main ZMQ/send loop
 	loop {
+		/*
+		if zmq_count % 100 == 0 {
+			println!("send tid: {:?}", thread::current().id());
+		}
+		*/
+		
 		router.recv_into(&mut id, 0).unwrap();
 		let recv_size = router.recv_into(&mut msg, 0).unwrap();
 		// End condition
@@ -140,8 +241,7 @@ async fn send_async(remote_clients: &mut FnvHashMap<u64, Sender<f32>>, router: S
 	zmq_count
 }
 
-async fn run_async(mut receiver: Receiver<f32>, remote_clients: &mut FnvHashMap<u64, Sender<f32>>, router: Socket) -> u64 {
-
+async fn run_async(mut receiver: Receiver<f32>, mut remote_clients: FnvHashMap<u64, Sender<f32>>, router: Socket) -> u64 {
 	let recv_t = recv_async(receiver);
 	let send_t = send_async(remote_clients, router);
 	let (queue_count, zmq_count) =  join(recv_t, send_t).await;
@@ -170,16 +270,32 @@ fn main() {
 	let now = Instant::now();
 	let recv_counter = match args[1].as_str() {
 		"a" => {
-			block_on(run_async(receiver, &mut remote_clients, router))
+			let mut rt = Builder::new().threaded_scheduler().core_threads(2).build().unwrap();
+			let queue_count_f = rt.spawn(recv_async(receiver));
+			let zmq_count = rt.block_on(send_async(remote_clients, router));
+
+			let queue_count = block_on(queue_count_f).unwrap();
+			if queue_count != zmq_count {
+				println!("Warning! MPSC receiver not receiving everything?");
+			}
+			zmq_count
 		}
 		"t" => {
 			run_sync(receiver, &mut remote_clients, router)
 		}
+		"h" => {
+			run_hash_only(receiver, &mut remote_clients, router)
+		}
+		"d" => {
+			run_deserial_only(router)
+		}
 		_ => { panic!("Unsupported argument!"); }
 	};
+	
 	let time = now.elapsed();
 	println!("{:?} secs, received {}", time, recv_counter);
 	println!("Throughput: {}", ((recv_counter as f64) / ((time.as_nanos() as f64) / (1_000_000_000 as f64))));
 	println!("{},{:?},{}", recv_counter, time, ((recv_counter as f64) / ((time.as_nanos() as f64) / (1_000_000_000 as f64))));
+	
 	
 }
