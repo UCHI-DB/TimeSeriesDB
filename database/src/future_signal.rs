@@ -49,7 +49,7 @@ pub struct BufferedSignal<T,U,F,G>
 	kernel: Option<Kernel<T>>
 }
 
-/* Fix the buffer to not reuqire broad locking it */
+/* Fix the buffer to not require broad locking it */
 impl<T,U,F,G> BufferedSignal<T,U,F,G> 
 	where T: Copy + Send+ FFTnum + Float + Lapack,
 		  U: Stream,
@@ -237,7 +237,7 @@ pub struct NonStoredSignal<T,U,F,G>
 	segments_produced: u64,
 }
 
-/* Fix the buffer to not reuqire broad locking it */
+/* Fix the buffer to not require broad locking it */
 impl<T,U,F,G> NonStoredSignal<T,U,F,G> 
 	where T: Copy + Send,
 		  U: Stream,

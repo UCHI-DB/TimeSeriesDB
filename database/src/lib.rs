@@ -51,12 +51,13 @@ mod btree;
 mod lcce;
 mod kernel;
 mod compression_demon;
-mod remote_stream;
 mod dispatcher;
+mod tcp_endpoint;
+mod mapping_server;
 
 use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
-use remote_stream::remote_stream_from_receiver;
-use dispatcher::ZMQDispatcher;
+use tcp_endpoint::TcpEndpoint;
+use mapping_server::MappingServer;
 use std::collections::{HashMap,HashSet};
 use std::collections::hash_map::RandomState;
 use fnv::{FnvHashMap, FnvBuildHasher};
@@ -74,8 +75,8 @@ use crate::methods::compress::{GZipCompress, ZlibCompress, DeflateCompress, Snap
 use crate::methods::Methods::Fourier;
 use crate::methods::gorilla_encoder::GorillaEncoder;
 
+const DEFAULT_CLIENT_BUF_SIZE: usize = 2048;
 const DEFAULT_BUF_SIZE: usize = 150;
-const DEFAULT_MPSC_BUF_SIZE: usize = 2000;
 const DEFAULT_DELIM: char = '\n';
 
 pub fn run_test<T: 'static>(config_file: &str)
@@ -483,12 +484,6 @@ pub fn run_test<T: 'static>(config_file: &str)
 pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
 {
-
-	/* let config = match Loader::from_file(Path::new(config_file)) {
-		Ok(config) => config,
-		Err(e) => panic!("{:?}", e),
-	}; */
-
 	/* Loading the config file as toml::Value
 	 * toml-loader was causing issues with different versions of toml
 	 * as it only supported previous versions
@@ -508,13 +503,12 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	let fm_comp = load_file_manager_comp(&config);
 
 	/* Buffer loading */
-	let (buf_option, compre_buf_option) = load_buffer(&config, fm, fm_comp);
+	let (buf_option, compre_buf_option): (Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>, Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>) = load_buffer(&config, fm, fm_comp);
 
 	/* Client loading */
 	let mut signals: Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>> = Vec::new();
-	//let mut remote_clients: HashMap<u64, Sender<T>, RandomState> = HashMap::new();
-	let mut remote_clients =  FnvHashMap::default();
-	match load_clients(&config, &mut signals, &mut remote_clients, &buf_option) {
+	let mut mapping =  FnvHashMap::default();
+	match load_clients(&config, &mut signals, &mut mapping, &buf_option) {
 		// testdict
 		None => (),
 		d => {
@@ -524,8 +518,8 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	};
 
 	/* Dispatcher loading*/
-	remote_clients.shrink_to_fit();
-	let mut dispatchers: Vec<ZMQDispatcher<T>> = load_dispatchers(&config, remote_clients);
+	mapping.shrink_to_fit();
+	let mut mapping_servers: Vec<MappingServer> = load_mappingserver(&config, mapping);
 
 	//let mut comps:Vec<CompressionDemon<_,DB,_>> = Vec::new();
 	let batch = 20;
@@ -609,14 +603,14 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	}
 
 	/* Construct dispatcher threads */
-	let mut dispatcher_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(dispatchers.len());
-	let mut dispatcher_continue: Vec<Arc<AtomicBool>> = Vec::with_capacity(dispatchers.len()); // TODO mutable needed?
-	while dispatchers.len() > 0 {
-		let mut dispatcher= dispatchers.pop().unwrap();
-		let dispatcher_cont_t = Arc::new(AtomicBool::new(true));
-		dispatcher_continue.push(Arc::clone(&dispatcher_cont_t));
-		dispatcher_handles.push(thread::spawn(move || {
-			&dispatcher.run(dispatcher_cont_t);
+	let mut mappingserv_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(mapping_servers.len());
+	let mut mappingserv_continue: Vec<Arc<AtomicBool>> = Vec::with_capacity(mapping_servers.len()); // TODO mutable needed?
+	while mapping_servers.len() > 0 {
+		let mut server = mapping_servers.pop().unwrap();
+		let server_cont_t = Arc::new(AtomicBool::new(true));
+		mappingserv_continue.push(Arc::clone(&server_cont_t));
+		mappingserv_handles.push(thread::spawn(move || {
+			&server.run::<T>(server_cont_t);
 		}))
 	}
 
@@ -628,13 +622,16 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		}
 	}
 	/* Signals have all joined, so tell dispatcher to stop running */
-	for end_flag in dispatcher_continue {
+	for end_flag in mappingserv_continue {
 		end_flag.store(false, Ordering::Release);
 	}
-	/* Join dispatcher threads */
-	for dispatcher_handle in dispatcher_handles {
-		dispatcher_handle.join().unwrap();
+	/*
+	TODO currently force end...
+	/* Join mapping server threads */
+	for mappingserv_handle in mappingserv_handles {
+		mappingserv_handle.join().unwrap();
 	}
+	*/
 	
 	// Wait until the runtime becomes idle and shut it down.
 	match rt.shutdown_on_idle().wait() {
@@ -864,7 +861,7 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
  */
 fn load_clients<T>(config: &Value,
 	signals: &mut Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>>,
-	remote_clients: &mut HashMap<u64, Sender<T>, FnvBuildHasher>,
+	mapping: &mut HashMap<u64, u16, FnvBuildHasher>,
 	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,)
 	-> Option<Array2<T>>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
@@ -997,6 +994,10 @@ fn load_clients<T>(config: &Value,
 					.expect("Signal ID required for remote clients")
 					.as_integer()
 					.expect("If an ID for a client is provided it must be supplied as an integer") as u64;
+				let port = client_config.get("port")
+					.expect("The port for remote client mut be specified")
+					.as_integer()
+					.expect("The port must be provided as an integer") as u16;
 				let buffer = match client_config.get("params") {
 					Some(p) => {
 						match p.get("buffer_size") {
@@ -1004,18 +1005,17 @@ fn load_clients<T>(config: &Value,
 								// TODO make unwrap display something meaningful (like saying "buffer size too large")
 								usize::try_from(size.as_integer().expect("Buffer size must be provided as an integer")).unwrap()
 							}
-							None => DEFAULT_MPSC_BUF_SIZE, // Default buffer size
+							None => DEFAULT_CLIENT_BUF_SIZE, // Default buffer size
 						}
 					}
-					None => DEFAULT_MPSC_BUF_SIZE, // Default buffer size
+					None => DEFAULT_CLIENT_BUF_SIZE, // Default buffer size
 				};
-
-				let (mut sender, mut receiver) = channel::<T>(buffer);
-				//let remote_stream = Box::new(remote_stream_from_receiver::<T>(receiver, amount, run_period));
-				remote_clients.insert(signal_id, sender);
+				
+				mapping.insert(remote_signal_id, port);
+				let mut tcp_endpoint = TcpEndpoint::<T>::new(port, buffer);
 				
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignal::new(remote_signal_id, receiver, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+					Some(buf) => signals.push(Box::new(BufferedSignal::new(remote_signal_id, tcp_endpoint, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}
@@ -1025,36 +1025,36 @@ fn load_clients<T>(config: &Value,
 	testdict
 }
 
-fn load_dispatchers<T>(config: &Value, remote_clients: HashMap<u64, Sender<T>, FnvBuildHasher>) -> Vec<ZMQDispatcher<T>>
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FromStr + From<f32>,
+fn load_mappingserver(config: &Value, mapping: HashMap<u64, u16, FnvBuildHasher>) -> Vec<MappingServer>
 {
-	let mut rng = thread_rng();
-	let mut dispatchers: Vec<ZMQDispatcher<T>> = Vec::new();
-	if remote_clients.len() > 0 {
-		let ports: HashSet<u16> = HashSet::with_capacity(remote_clients.len());
-		for dispatcher_config in config.get("dispatchers")
-			.expect("Dispatcher must be provided if there is a remote client")
+	let mut mapping_servers: Vec<MappingServer> = Vec::new();
+	if mapping.len() > 0 {
+		// Check that ports don't overlap
+		let mut ports: HashSet<u16> = HashSet::new();
+		for client_port in mapping.values() {
+			ports.insert(client_port.clone());
+		}
+
+		// Get configuration
+		for mappingserv_config in config.get("mapping_server")
+			.expect("Mapping server must be provided if there is a remote client")
 			.as_table()
-			.expect("The clients must be provided as a TOML table").values()
+			.expect("The mapping servers must be provided as a TOML table").values()
 		{
-			let dis_id = match dispatcher_config.get("id") {
-				Some(id) => id.as_integer().expect("If an ID for a client is provided it must be supplied as an integer") as u64,
-				None => rng.gen(),
-			};
-			let port = dispatcher_config.get("port")
-							.expect("The port to receive data from must be specified")
+			let port = mappingserv_config.get("port")
+							.expect("The port to serve port mapping from must be specified")
 							.as_integer()
 							.expect("The port must be provided as an integer") as u16;
 			
 			if ports.contains(&port) {
-				println!("Duplicate port {:?}, dispatcher {:?} will be skipped", port, dis_id);
+				println!("Duplicate port {:?}, this mapping server instance will be skipped", port);
 			} else {
-				dispatchers.push(ZMQDispatcher::new(dis_id, remote_clients.clone(), port));
+				mapping_servers.push(MappingServer::new(mapping.clone(), port));
 			}
 		}
-		if dispatchers.is_empty() {
+		if mapping_servers.is_empty() {
 			panic!("At least one dispatcher must be provided if there is a remote client");
 		}
 	}
-	dispatchers
+	mapping_servers
 }

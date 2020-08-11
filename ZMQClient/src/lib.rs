@@ -4,179 +4,223 @@ extern crate bincode;
 #[macro_use]
 extern crate futures;
 
-use zmq::{Message, Socket};
-use std::thread::sleep;
-use std::time::Duration;
-
-use rand::random;
-
-use toml::Value;
-use std::fs::read_to_string;
-use tokio::time::{Instant, interval_at};
-use rand::distributions::Uniform;
-
+// (De)serialization
 use std::str::FromStr;
 use std::fmt::Debug;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use bincode::serialize;
+use bincode::{deserialize, serialize};
 
-use tokio::sync::mpsc::{channel, Receiver, Sender};
-
-use futures::executor::block_on;
+// tokio
+use tokio::runtime::Runtime;
 use tokio::stream::{Stream, StreamExt};
 use futures::prelude::Future;
 use futures::future::join_all;
 use core::pin::Pin;
+use tokio::time;
 
+// Tokio TCP Connection
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::io;
+use std::net::Shutdown;
+
+// Hash Map
+use std::collections::HashMap;
+use fnv::{FnvHashMap, FnvBuildHasher};
+
+// Other useful libraries
+use std::time::Duration;
+
+// Client imports
+use toml::Value;
+use std::fs::read_to_string;
+use tokio::time::{Instant, interval_at};
+use rand::distributions::Uniform;
 mod client;
 use client::{Amount, Frequency, construct_file_client, construct_file_client_skip_newline};
 use client::{construct_gen_client, construct_normal_gen_client};
 
 const DEFAULT_DELIM: char = '\n';
 
-/* Dummy Client to interface with Dispatcher
+/* Dummy Client to receive mapping and send to corresponding ports
  * Argument 1: config file to use (config file syntax is similar to that of client config for the main DB)
- * Argument 2: number of data points to send per ZMQ message (i.e. size of vector that is being sent each time)
+ * Argument 2: number of data points to send per message (i.e. size of vector that is being sent each time)
  */
 
 /* TODO
- * 1) Detect connection drop
- * 2) Issue in the main DB, but protocol for handling sent data limit
- * 3) Do something useful with initial "acknowledgement"
- * 
- * 4) Currently sends data in chunks of 4, but do a more dynamic system
- * 5) T is static... liftime issues
- * 6) Arbitrary MPSC buffer size
+ * 1) Initial mapping receive buffer size
  * 
  * Check other TODOs in the code
  */ 
 pub fn run_client(config_file: &str, send_size: usize)
 {
     
-    let config = load_config(config_file);
-
-    let context = zmq::Context::new();
-    let requester = context.socket(zmq::DEALER).unwrap();
-    requester.set_identity(&config.id).unwrap();
-
-    // Attempt to connect every five seconds
-    let five_sec = Duration::from_secs(5);
-    loop {
-        match requester.connect(format!("{}://{}:{}", config.protocol, config.address, config.port).as_str()) {
-            Ok(_) => { break; }
-            Err(_) => { sleep(five_sec);}
-        }
-    }
-    
-	// TODO Implement timeout for receiving initial settings and retrying
-	let mut msg = Message::new();
-	loop {
-		requester.send(Message::from(""), 0).unwrap();
-		// TODO Do something with received size
-		match requester.recv(&mut msg, 0) {
-			Ok(_) => { break; }
-			Err(_e) => { println!("Failed to receive inital message from server, retrying"); }
-		};
-	}
-    
-    match msg.as_str() {
-        Some(format_type) => {
-            match format_type {
-                "f32" => {
-					println!("Connected to server, type f32");	
-                    block_on(begin_async::<f32>(&config.config, requester, send_size));
-                }
-                "f64" => {
-					println!("Connected to server, type f64");
-					block_on(begin_async::<f64>(&config.config, requester, send_size));
-                }
-                _ => {
-                    panic!("Error: received wrong data type");
-                }
-            }
-        }
-        None => {
-            panic!("Error: Failed to receive inital message from server");
-        }
-    }
-}
-
-async fn begin_async<T: 'static>(config: &Value, requester: Socket, send_size: usize) where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
-{
-	let clients = load_clients::<T>(config);
-	let (send, mut recv) = channel::<(u64, T)>(2000);
-
-	let mut futures = vec![Box::pin(serialize_and_send(requester, &mut recv, send_size)) as Pin<Box<dyn Future<Output=()>>>];
-	for c in clients {
-		futures.push(Box::pin(client_async(c, send.clone())));
-	}
-	drop(send);
-	// Join here
-	join_all(futures).await;
-}
-
-// Polls on each client stream and sends to the serialization thread
-// TODO error handling for sending to MPSC queue
-async fn client_async<T>(c: (u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>), mut send: Sender<(u64, T)>)
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
-{
-	let (id, mut c_stream) = c;
-	loop {
-		match (*c_stream).next().await {
-			Some(value) => { send.send((id, value)).await; }
-			None => { 
-				drop(send);
-				println!("Dropping...");
-				return;
-			}
+	let config = load_config(config_file);
+	let mut rt = Runtime::new().expect("tokio runtime failure");
+	
+	// Receive initial mapping
+	let (format_type, mapping) = rt.block_on(recv_mapping(&config.address, config.port));
+	println!("Connected: type {}, mapping {:?}", format_type, mapping);
+	
+	// Run with appropriate data type
+    match format_type.as_str() {
+		"f32" => {
+			begin_async::<f32>(&config.config, &config.address, &mapping, send_size, rt);
+		}
+		"f64" => {
+			begin_async::<f64>(&config.config, &config.address, &mapping, send_size, rt);
+		}
+		x => {
+			println!("Received unsupported format: {}", x);
 		}
 	}
 }
 
-// Serialize and send to server
-async fn serialize_and_send<T>(requester: Socket, recv: &mut Receiver<(u64, T)>, send_size: usize) 
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin {
-	/*
-	let dummy_data = vec![(10 as u64, T::from(1.0)), (10 as u64, T::from(1.2)), (10 as u64, T::from(1.3)), (10 as u64, T::from(1.5)), (10 as u64, T::from(1.0)), (10 as u64, T::from(1.2)), (10 as u64, T::from(1.3)), (10 as u64, T::from(1.5)), (10 as u64, T::from(1.0)), (10 as u64, T::from(1.2)), (10 as u64, T::from(1.3)), (10 as u64, T::from(1.5))];
-	let dummy = serialize(&dummy_data).unwrap();
-	for _i in 0..5000000 {
-		requester.send(&dummy, 0).unwrap();
-	}
-	requester.send(Message::from("F"), 0).unwrap(); // Indicates finished
-	println!("Finished");
-	return;
-	*/
+
+/*
+ * Given address and port, receives the data type and the initial ID-to-port mapping and return it
+ * 
+ * TODO arbitrary buffer size
+ */
+async fn recv_mapping(addr: &String, port: u16) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
+	let full_addr = format!("{}:{}", addr, port);
+	let mut stream;
 	loop {
-		let mut data: Vec<(u64, T)> = Vec::new();
-		for _i in 0..send_size {
-			match recv.recv().await {
-				Some(value) => { data.push(value); }
-				None => {
-					let serialized = serialize(&data).unwrap();
-					requester.send(&serialized, 0).unwrap();
-					requester.send(Message::from("F"), 0).unwrap(); // Indicates finished
-					println!("Finished");
-					return;
+		match TcpStream::connect(&full_addr).await {
+			Ok(s) => {
+				stream = s;
+				break;
+			}
+			Err(e) => {
+				// Connection error, sleep for 1 sec and try again
+				println!("{:?}", e);
+				time::delay_for(time::Duration::from_secs(1)).await;
+			}
+		}
+	}
+	stream.write_all(b"I").await.unwrap();
+	let mut buffer = [0; 1024];
+	let recv_size = stream.read(&mut buffer).await.unwrap();
+	match bincode::deserialize::<(&str, HashMap<u64, u16, FnvBuildHasher>)>(&buffer[0..recv_size]) {
+		Ok((s, m)) => {
+			return (String::from(s), m);
+		}
+		Err(e) => {
+			// Deserialization error... do something robust here?
+			panic!("{:?}", e)
+		}
+	}
+}
+
+/*
+ * Begins the async clients using the Tokio runtime
+ * 
+ */
+fn begin_async<T: 'static>(config: &Value, addr: &String, mapping: &HashMap<u64, u16, FnvBuildHasher>, send_size: usize, mut rt: Runtime)
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
+{
+	// This has to be read here as reading client depends on type received from server
+	let clients = load_clients(config);
+
+	let mut joins = Vec::new();
+	for (id, client) in clients {
+		match mapping.get(&id) {
+			Some(port) => {
+				joins.push(rt.spawn(client_async::<T>(client, addr.clone(), *port, send_size)));
+			}
+			None => {
+				println!("No port found!");
+			}
+		}
+	}
+
+	// TODO join with joins (JoinHandle)
+	rt.block_on(join_all(joins));
+}
+
+/*
+ * Represents the process of each client; connects to appropriate port, receives data from stream, then serializes and sends
+ * 
+ */
+async fn client_async<T>(mut client: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
+							addr: String, port: u16, send_size: usize)
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
+{
+	// Establish connection
+	let full_addr = format!("{}:{}", addr, port);
+	let mut stream;
+
+	// Data sending
+	loop {
+		// Establish connection
+		loop {
+			match TcpStream::connect(&full_addr).await {
+				Ok(s) => {
+					stream = s;
+					break;
+				}
+				Err(e) => {
+					// Connection error, sleep for 1 sec and try again
+					println!("{:?}", e);
+					time::delay_for(time::Duration::from_secs(1)).await;
 				}
 			}
 		}
+		let mut data: Vec<T> = Vec::new();
+		// Fill batch vector
+		for _i in 0..send_size {
+			match client.next().await {
+				Some(value) => { 
+					data.push(value);
+				}
+				None => { 
+					// Send whatever is left and disconnect
+					let serialized = serialize(&data).unwrap();
+					match stream.write(&serialized[..]).await {
+						Ok(_) => (),
+						Err(e) => {
+							println!("{:?}", e);
+						}
+					}
+					
+					for _i in 0..5 {
+						match TcpStream::connect(&full_addr).await {
+							Ok(ref mut s) => {
+								s.write(b"F").await.unwrap();
+								break;
+							}
+							Err(e) => {
+								// Connection error, sleep for 1 sec and try again (only 5 times)
+								println!("{:?}", e);
+								time::delay_for(time::Duration::from_secs(1)).await;
+							}
+						}
+					}
+					println!("Dropping...");
+					return;
+				}
+			}
+			
+		}
+		
+		// Serialize and send full vector
 		let serialized = serialize(&data).unwrap();
-		//println!("Sending {:?}", data);
-	        requester.send(&serialized, 0).unwrap();
+		match stream.write(&serialized[..]).await {
+			Ok(_) => (),
+			Err(e) => {
+				println!("{:?}", e);
+			}
+		}
 	}
 }
-
-
 
 /* Config Loading */
 
 pub struct Config
 {
-    protocol: String,
     address: String,
     port: u16,
-    id: [u8; 5],
     config :Box<Value>
 }
 
@@ -189,16 +233,6 @@ pub fn load_config(config_file: &str) -> Config
         }
     };
     let config = raw_string.parse::<Value>().unwrap();
-    
-    let protocol = match config.get("protocol") {
-        Some(value) => {
-            match value.as_str().expect("Protocol must be provided as a string") {
-                "tcp" => "tcp",
-                _ => panic!("Unsupported protocol")
-            }
-        }
-        None => "tcp"
-    };
 
     let addr = config.get("address")
                         .expect("Address must be provided")
@@ -216,32 +250,9 @@ pub fn load_config(config_file: &str) -> Config
         None => panic!("Port number must be specified"),
     };
 
-    // This is the identity for ZMQ
-    let id = match config.get("id") {
-        Some(value) => {
-            let arr = value.as_array().expect("The ID must be specified as an array of 5 integers");
-            if arr.len() != 5 { panic!("The ID must be specified as an array of length 5") }
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = arr[i].as_integer().expect("Each element in the ID array must be an integer") as u8;
-            }
-            idarr
-        }
-        None => {
-            // Random ID
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = random::<u8>();
-            }
-            idarr
-        },
-    };
-
     Config {
-        protocol: String::from(protocol),
         address: String::from(addr),
         port: port,
-		id: id.clone(),
 		config: Box::new(config)
     }
     
