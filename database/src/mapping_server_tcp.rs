@@ -41,41 +41,40 @@ impl MappingServer
     }
     
     // CHECK TODO
-    pub fn run<T>(&mut self, context: Arc<zmq::Context>, continue_status: Arc<AtomicBool>)
+    pub fn run<T>(&mut self, continue_status: Arc<AtomicBool>)
         where T: Copy + Send + Sync + DeserializeOwned + Debug + From<f32> + Serialize
     {
-        let router = context.socket(zmq::ROUTER).unwrap();
-        assert!(router.bind(format!("tcp://*:{}", self.port).as_str()).is_ok());
+        // From TCP Listener
+        let addr = format!("0.0.0.0:{}", self.port);
+        let mut listener = TcpListener::bind(&addr.as_str()).unwrap();
 
         // Serialize content
         let type_name = type_name::<T>(); // TODO unsafe code
-        let serialized = serialize(&(type_name, self.mapping.clone())).unwrap();
+        let vector = serialize(&(type_name, self.mapping.clone())).unwrap();
+        let serialized = vector.as_slice();
+
         println!("Ready to send mapping!");
 
-        let mut identity: [u8; 5] = [0; 5]; // Length of default ZMQ identity
-        let mut data: [u8; 4] = [0; 4];
-        let mut id_size: usize;
-        let mut recv_size: usize;
-	
+        let mut data = [0; 4];
+
+        // Process requests
+        //for ref mut stream_result in listener.incoming() {
         while (*continue_status).load(Ordering::Acquire) {
-            // Receive data
-            match router.recv_into(&mut identity, 0) {
-                Ok(size) => {
-                    id_size = size;
+            // TODO as listener is blocking, the atomic is useless
+            // the joining part in lib.rs is also commented out for now
+            match listener.accept() {
+                Ok((ref mut stream, _addr)) => {
+                    match stream.read(&mut data) {
+                        Ok(_size) => {
+                            stream.write(&serialized).unwrap();
+                        },
+                        Err(_) => {
+                            println!("An error occurred, terminating connection with {}", stream.peer_addr().unwrap());
+                        }
+                    }
                 }
-                Err(_e) => {
-                    println!("Error: dispatcher could not process received data");
-                    continue;
-                }
-            }
-            match router.recv_into(&mut data, 0) {
-                Ok(size) => {
-                    router.send(&identity[0..id_size], zmq::SNDMORE).unwrap();
-                    router.send(&serialized, 0).unwrap();
-                }
-                Err(_e) => {
-                    println!("Error: dispatcher could not process received data");
-                    continue;
+                Err(e) => {
+                    println!("{:?}", e);
                 }
             }
         }

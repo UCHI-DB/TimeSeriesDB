@@ -20,7 +20,8 @@ use core::pin::Pin;
 use tokio::time;
 
 // Tokio TCP Connection
-use zmq::{Message, Socket};
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::io;
 use std::net::Shutdown;
 
@@ -30,9 +31,6 @@ use fnv::{FnvHashMap, FnvBuildHasher};
 
 // Other useful libraries
 use std::time::Duration;
-use std::thread::sleep;
-use rand::random;
-use std::sync::Arc;
 
 // Client imports
 use toml::Value;
@@ -62,17 +60,16 @@ pub fn run_client(config_file: &str, send_size: usize)
 	let mut rt = Runtime::new().expect("tokio runtime failure");
 	
 	// Receive initial mapping
-	let context = zmq::Context::new();
-	let (format_type, mapping) = recv_mapping(&context, &config);
+	let (format_type, mapping) = rt.block_on(recv_mapping(&config.address, config.port));
 	println!("Connected: type {}, mapping {:?}", format_type, mapping);
 	
 	// Run with appropriate data type
     match format_type.as_str() {
 		"f32" => {
-			begin_async::<f32>(context, &config, &mapping, send_size, rt);
+			begin_async::<f32>(&config.config, &config.address, &mapping, send_size, rt);
 		}
 		"f64" => {
-			begin_async::<f64>(context, &config, &mapping, send_size, rt);
+			begin_async::<f64>(&config.config, &config.address, &mapping, send_size, rt);
 		}
 		x => {
 			println!("Received unsupported format: {}", x);
@@ -86,38 +83,32 @@ pub fn run_client(config_file: &str, send_size: usize)
  * 
  * TODO arbitrary buffer size
  */
-fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
-    let requester = context.socket(zmq::DEALER).unwrap();
-	requester.set_identity(&config.id).unwrap();
-	println!("Send1");
-	let five_sec = Duration::from_secs(5);
-    loop {
-        match requester.connect(format!("{}://{}:{}", config.protocol, config.address, config.port).as_str()) {
-            Ok(_) => { break; }
-            Err(_) => { sleep(five_sec);}
-        }
-	}
-	
-	println!("Send2");
-	let mut buffer = [0; 1024];
+async fn recv_mapping(addr: &String, port: u16) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
+	let full_addr = format!("{}:{}", addr, port);
+	let mut stream;
 	loop {
-		requester.send(Message::from(""), 0).unwrap();
-		println!("Send3");
-		match requester.recv_into(&mut buffer, 0) {
-			Ok(recv_size) => {
-				match bincode::deserialize::<(&str, HashMap<u64, u16, FnvBuildHasher>)>(&buffer[0..recv_size]) {
-					Ok((s, m)) => {
-						return (String::from(s), m);
-					}
-					Err(e) => {
-						// Deserialization error... do something robust here?
-						panic!("{:?}", e)
-					}
-				}
+		match TcpStream::connect(&full_addr).await {
+			Ok(s) => {
+				stream = s;
+				break;
 			}
-			Err(_e) => {
-				println!("Error: dispatcher could not process received data");
+			Err(e) => {
+				// Connection error, sleep for 1 sec and try again
+				println!("{:?}", e);
+				time::delay_for(time::Duration::from_secs(1)).await;
 			}
+		}
+	}
+	stream.write_all(b"I").await.unwrap();
+	let mut buffer = [0; 1024];
+	let recv_size = stream.read(&mut buffer).await.unwrap();
+	match bincode::deserialize::<(&str, HashMap<u64, u16, FnvBuildHasher>)>(&buffer[0..recv_size]) {
+		Ok((s, m)) => {
+			return (String::from(s), m);
+		}
+		Err(e) => {
+			// Deserialization error... do something robust here?
+			panic!("{:?}", e)
 		}
 	}
 }
@@ -126,17 +117,17 @@ fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64
  * Begins the async clients using the Tokio runtime
  * 
  */
-fn begin_async<T: 'static>(context: zmq::Context, config: &Config, mapping: &HashMap<u64, u16, FnvBuildHasher>, send_size: usize, mut rt: Runtime)
+fn begin_async<T: 'static>(config: &Value, addr: &String, mapping: &HashMap<u64, u16, FnvBuildHasher>, send_size: usize, mut rt: Runtime)
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
 	// This has to be read here as reading client depends on type received from server
-	let clients = load_clients(&*config.config);
-	let context_rc = Arc::new(context);
+	let clients = load_clients(config);
+
 	let mut joins = Vec::new();
 	for (id, client) in clients {
 		match mapping.get(&id) {
 			Some(port) => {
-				joins.push(rt.spawn(client_async::<T>(context_rc.clone(), client, config.protocol.clone(), config.address.clone(), config.id, *port, send_size)));
+				joins.push(rt.spawn(client_async::<T>(client, addr.clone(), *port, send_size)));
 			}
 			None => {
 				println!("No port found!");
@@ -152,24 +143,32 @@ fn begin_async<T: 'static>(context: zmq::Context, config: &Config, mapping: &Has
  * Represents the process of each client; connects to appropriate port, receives data from stream, then serializes and sends
  * 
  */
-async fn client_async<T>(context: Arc<zmq::Context>, mut client: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
-	protocol: String, address: String, id: [u8; 5], port: u16, send_size: usize)
+async fn client_async<T>(mut client: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
+							addr: String, port: u16, send_size: usize)
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
 	// Establish connection
-	let requester = context.socket(zmq::DEALER).unwrap();
-	requester.set_identity(&id).unwrap();
+	let full_addr = format!("{}:{}", addr, port);
+	let mut stream;
 
-	let five_sec = Duration::from_secs(5);
-    loop {
-        match requester.connect(format!("{}://{}:{}", protocol, address, port).as_str()) {
-            Ok(_) => { break; }
-            Err(_) => { sleep(five_sec);}
-        }
-	}
-
+	// Data sending
 	loop {
+		// Establish connection
+		loop {
+			match TcpStream::connect(&full_addr).await {
+				Ok(s) => {
+					stream = s;
+					break;
+				}
+				Err(e) => {
+					// Connection error, sleep for 1 sec and try again
+					println!("{:?}", e);
+					time::delay_for(time::Duration::from_secs(1)).await;
+				}
+			}
+		}
 		let mut data: Vec<T> = Vec::new();
+		// Fill batch vector
 		for _i in 0..send_size {
 			match client.next().await {
 				Some(value) => { 
@@ -178,16 +177,41 @@ async fn client_async<T>(context: Arc<zmq::Context>, mut client: Box<dyn Stream<
 				None => { 
 					// Send whatever is left and disconnect
 					let serialized = serialize(&data).unwrap();
-					requester.send(&serialized, 0).unwrap();
-					requester.send(Message::from("F"), 0).unwrap(); // Indicates finished
-					println!("Finished");
+					match stream.write(&serialized[..]).await {
+						Ok(_) => (),
+						Err(e) => {
+							println!("{:?}", e);
+						}
+					}
+					
+					for _i in 0..5 {
+						match TcpStream::connect(&full_addr).await {
+							Ok(ref mut s) => {
+								s.write(b"F").await.unwrap();
+								break;
+							}
+							Err(e) => {
+								// Connection error, sleep for 1 sec and try again (only 5 times)
+								println!("{:?}", e);
+								time::delay_for(time::Duration::from_secs(1)).await;
+							}
+						}
+					}
+					println!("Dropping...");
 					return;
 				}
 			}
+			
 		}
+		
+		// Serialize and send full vector
 		let serialized = serialize(&data).unwrap();
-		//println!("Sending {:?}", data);
-		requester.send(&serialized, 0).unwrap();
+		match stream.write(&serialized[..]).await {
+			Ok(_) => (),
+			Err(e) => {
+				println!("{:?}", e);
+			}
+		}
 	}
 }
 
@@ -195,10 +219,8 @@ async fn client_async<T>(context: Arc<zmq::Context>, mut client: Box<dyn Stream<
 
 pub struct Config
 {
-	protocol: String,
     address: String,
-	port: u16,
-	id: [u8; 5],
+    port: u16,
     config :Box<Value>
 }
 
@@ -210,17 +232,7 @@ pub fn load_config(config_file: &str) -> Config
             panic!("{:?}", e)
         }
     };
-	let config = raw_string.parse::<Value>().unwrap();
-	
-	let protocol = match config.get("protocol") {
-        Some(value) => {
-            match value.as_str().expect("Protocol must be provided as a string") {
-                "tcp" => "tcp",
-                _ => panic!("Unsupported protocol")
-            }
-        }
-        None => "tcp"
-    };
+    let config = raw_string.parse::<Value>().unwrap();
 
     let addr = config.get("address")
                         .expect("Address must be provided")
@@ -236,34 +248,11 @@ pub fn load_config(config_file: &str) -> Config
             tmp
         }
         None => panic!("Port number must be specified"),
-	};
-	
-	// This is the identity for ZMQ
-    let id = match config.get("id") {
-        Some(value) => {
-            let arr = value.as_array().expect("The ID must be specified as an array of 5 integers");
-            if arr.len() != 5 { panic!("The ID must be specified as an array of length 5") }
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = arr[i].as_integer().expect("Each element in the ID array must be an integer") as u8;
-            }
-            idarr
-        }
-        None => {
-            // Random ID
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = random::<u8>();
-            }
-            idarr
-        },
     };
 
     Config {
-		protocol: String::from(protocol),
         address: String::from(addr),
-		port: port,
-		id: id.clone(),
+        port: port,
 		config: Box::new(config)
     }
     

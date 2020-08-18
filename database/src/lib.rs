@@ -508,7 +508,8 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	/* Client loading */
 	let mut signals: Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>> = Vec::new();
 	let mut mapping =  FnvHashMap::default();
-	match load_clients(&config, &mut signals, &mut mapping, &buf_option) {
+	let cx = Arc::new(zmq::Context::new());
+	match load_clients(&config, &mut signals, &mut mapping, &buf_option, cx.clone()) {
 		// testdict
 		None => (),
 		d => {
@@ -609,8 +610,9 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		let mut server = mapping_servers.pop().unwrap();
 		let server_cont_t = Arc::new(AtomicBool::new(true));
 		mappingserv_continue.push(Arc::clone(&server_cont_t));
+		let cx_clone = cx.clone();
 		mappingserv_handles.push(thread::spawn(move || {
-			&server.run::<T>(server_cont_t);
+			&server.run::<T>(cx_clone, server_cont_t);
 		}))
 	}
 
@@ -862,7 +864,8 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
 fn load_clients<T>(config: &Value,
 	signals: &mut Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>>,
 	mapping: &mut HashMap<u64, u16, FnvBuildHasher>,
-	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,)
+	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,
+	cx: Arc<zmq::Context>)
 	-> Option<Array2<T>>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
 {
@@ -1012,7 +1015,7 @@ fn load_clients<T>(config: &Value,
 				};
 				
 				mapping.insert(remote_signal_id, port);
-				let mut tcp_endpoint = TcpEndpoint::<T>::new(port, buffer);
+				let mut tcp_endpoint = TcpEndpoint::<T>::new(port, buffer, cx.clone());
 				
 				match &buf_option {
 					Some(buf) => signals.push(Box::new(BufferedSignal::new(remote_signal_id, tcp_endpoint, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),

@@ -1,8 +1,6 @@
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
-#[macro_use]
-extern crate futures;
 
 // (De)serialization
 use std::str::FromStr;
@@ -13,14 +11,14 @@ use bincode::{deserialize, serialize};
 
 // tokio
 use tokio::runtime::Runtime;
-use tokio::stream::{Stream, StreamExt};
-use futures::prelude::Future;
-use futures::future::join_all;
+//use tokio::stream::{Stream, StreamExt};
 use core::pin::Pin;
-use tokio::time;
+use tokio::prelude::*;
 
 // Tokio TCP Connection
-use zmq::{Message, Socket};
+use tokio::net::TcpStream;
+use std::net::SocketAddr;
+//use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::io;
 use std::net::Shutdown;
 
@@ -29,15 +27,12 @@ use std::collections::HashMap;
 use fnv::{FnvHashMap, FnvBuildHasher};
 
 // Other useful libraries
-use std::time::Duration;
-use std::thread::sleep;
-use rand::random;
-use std::sync::Arc;
+use std::time::{Duration,Instant};
+use tokio::timer::Interval;
 
 // Client imports
 use toml::Value;
 use std::fs::read_to_string;
-use tokio::time::{Instant, interval_at};
 use rand::distributions::Uniform;
 mod client;
 use client::{Amount, Frequency, construct_file_client, construct_file_client_skip_newline};
@@ -62,17 +57,25 @@ pub fn run_client(config_file: &str, send_size: usize)
 	let mut rt = Runtime::new().expect("tokio runtime failure");
 	
 	// Receive initial mapping
-	let context = zmq::Context::new();
-	let (format_type, mapping) = recv_mapping(&context, &config);
+	/*
+	let mapping = Mapping{ addr: config.address.clone(), port: config.port };
+	let (format_type, mapping) = match rt.block_on(mapping) {
+		Ok((f, m)) => (f, m),
+		Err(e) => {
+			panic!("Error in parsing mapping");
+		}
+	};
+	*/
+	let (format_type, mapping) = get_mapping(&config.address, config.port);
 	println!("Connected: type {}, mapping {:?}", format_type, mapping);
 	
 	// Run with appropriate data type
     match format_type.as_str() {
 		"f32" => {
-			begin_async::<f32>(context, &config, &mapping, send_size, rt);
+			begin_async::<f32>(&config.config, &config.address, &mapping, send_size, rt);
 		}
 		"f64" => {
-			begin_async::<f64>(context, &config, &mapping, send_size, rt);
+			begin_async::<f64>(&config.config, &config.address, &mapping, send_size, rt);
 		}
 		x => {
 			println!("Received unsupported format: {}", x);
@@ -81,42 +84,76 @@ pub fn run_client(config_file: &str, send_size: usize)
 }
 
 
+fn get_mapping(addr: &String, port: u16) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
+	//let full_addr = format!("{}:{}", addr, port).as_str();
+	let mut stream;
+	loop {
+		match std::net::TcpStream::connect(format!("{}:{}", addr, port).as_str()) {
+			Ok(s) => {
+				stream = s;
+				break;
+			}
+			Err(e) => (),
+		}
+	}
+	stream.write_all(b"I").unwrap();
+	let mut buffer = [0; 1024];
+	let recv_size = stream.read(&mut buffer).unwrap();
+	match bincode::deserialize::<(&str, HashMap<u64, u16, FnvBuildHasher>)>(&buffer[0..recv_size]) {
+		Ok((s, m)) => {
+			return (String::from(s), m);
+		}
+		Err(e) => {
+			// Deserialization error... do something robust here?
+			panic!("{:?}", e)
+		}
+	}
+}
+
 /*
  * Given address and port, receives the data type and the initial ID-to-port mapping and return it
  * 
  * TODO arbitrary buffer size
  */
-fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
-    let requester = context.socket(zmq::DEALER).unwrap();
-	requester.set_identity(&config.id).unwrap();
-	println!("Send1");
-	let five_sec = Duration::from_secs(5);
-    loop {
-        match requester.connect(format!("{}://{}:{}", config.protocol, config.address, config.port).as_str()) {
-            Ok(_) => { break; }
-            Err(_) => { sleep(five_sec);}
-        }
-	}
-	
-	println!("Send2");
-	let mut buffer = [0; 1024];
-	loop {
-		requester.send(Message::from(""), 0).unwrap();
-		println!("Send3");
-		match requester.recv_into(&mut buffer, 0) {
-			Ok(recv_size) => {
-				match bincode::deserialize::<(&str, HashMap<u64, u16, FnvBuildHasher>)>(&buffer[0..recv_size]) {
-					Ok((s, m)) => {
-						return (String::from(s), m);
-					}
-					Err(e) => {
-						// Deserialization error... do something robust here?
-						panic!("{:?}", e)
-					}
+pub struct Mapping {
+	addr: String,
+	port: u16
+}
+
+impl Future for Mapping {
+	type Item = (String, HashMap<u64, u16, FnvBuildHasher>);
+	type Error = ();
+
+	fn poll(&mut self) -> Result<Async<(String, HashMap<u64, u16, FnvBuildHasher>)>, ()> {
+		let full_addr = format!("{}:{}", self.addr, self.port).as_str().parse::<SocketAddr>().unwrap();
+		println!("{:?}", full_addr);
+		let mut stream;
+		loop {
+			match TcpStream::connect(&full_addr).poll() {
+				Ok(Async::Ready(s)) => {
+					stream = s;
+					break;
+				}
+				Ok(Async::NotReady) => {
+					//println!("Here?");
+					//return Ok(Async::NotReady);
+				}
+				Err(e) => {
+					// Connection error, sleep for 1 sec and try again
+					println!("{:?}", e);
 				}
 			}
-			Err(_e) => {
-				println!("Error: dispatcher could not process received data");
+		}
+		stream.write_all(b"I").unwrap();
+		let mut buffer = [0; 1024];
+		let recv_size = stream.read(&mut buffer).unwrap();
+		match bincode::deserialize::<(&str, HashMap<u64, u16, FnvBuildHasher>)>(&buffer[0..recv_size]) {
+			Ok((s, m)) => {
+				return Ok(Async::Ready((String::from(s), m)));
+			}
+			Err(e) => {
+				// Deserialization error... do something robust here?
+				panic!("{:?}", e)
 			}
 		}
 	}
@@ -126,17 +163,20 @@ fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64
  * Begins the async clients using the Tokio runtime
  * 
  */
-fn begin_async<T: 'static>(context: zmq::Context, config: &Config, mapping: &HashMap<u64, u16, FnvBuildHasher>, send_size: usize, mut rt: Runtime)
+fn begin_async<T: 'static>(config: &Value, addr: &String, mapping: &HashMap<u64, u16, FnvBuildHasher>, send_size: usize, mut rt: Runtime)
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
 	// This has to be read here as reading client depends on type received from server
-	let clients = load_clients(&*config.config);
-	let context_rc = Arc::new(context);
-	let mut joins = Vec::new();
+	let clients = load_clients(config);
 	for (id, client) in clients {
 		match mapping.get(&id) {
 			Some(port) => {
-				joins.push(rt.spawn(client_async::<T>(context_rc.clone(), client, config.protocol.clone(), config.address.clone(), config.id, *port, send_size)));
+				let tc = TcpClient::<T> {
+					client: client,
+					addr: format!("{}:{}", addr, port).parse::<SocketAddr>().unwrap(),
+					send_size: send_size
+				};
+				rt.spawn(tc);
 			}
 			None => {
 				println!("No port found!");
@@ -145,60 +185,111 @@ fn begin_async<T: 'static>(context: zmq::Context, config: &Config, mapping: &Has
 	}
 
 	// TODO join with joins (JoinHandle)
-	rt.block_on(join_all(joins));
+	rt.shutdown_on_idle().wait().unwrap();
 }
 
 /*
  * Represents the process of each client; connects to appropriate port, receives data from stream, then serializes and sends
  * 
  */
-async fn client_async<T>(context: Arc<zmq::Context>, mut client: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
-	protocol: String, address: String, id: [u8; 5], port: u16, send_size: usize)
+
+pub struct TcpClient<T>
+{
+    client: Box<dyn Stream<Item=T, Error=()> + Sync + Send + Unpin>,
+	addr: SocketAddr,
+	send_size: usize
+}
+
+impl<T> Future for TcpClient<T>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
-	// Establish connection
-	let requester = context.socket(zmq::DEALER).unwrap();
-	requester.set_identity(&id).unwrap();
+	type Item = ();
+	type Error = ();
 
-	let five_sec = Duration::from_secs(5);
-    loop {
-        match requester.connect(format!("{}://{}:{}", protocol, address, port).as_str()) {
-            Ok(_) => { break; }
-            Err(_) => { sleep(five_sec);}
-        }
-	}
+	fn poll(&mut self) -> Poll<(),()> {
+		// Establish connection
+		let mut stream;
 
-	loop {
-		let mut data: Vec<T> = Vec::new();
-		for _i in 0..send_size {
-			match client.next().await {
-				Some(value) => { 
-					data.push(value);
+		// Data sending
+		loop {
+			// Establish connection
+			/*
+			loop {
+				match TcpStream::connect(&self.addr).poll() {
+					Ok(Async::Ready(s)) => {
+						stream = s;
+						break;
+					}
+					Ok(Async::NotReady) => (),
+					Err(e) => {
+						// Connection error, sleep for 1 sec and try again
+						println!("{:?}", e);
+					}
 				}
-				None => { 
-					// Send whatever is left and disconnect
-					let serialized = serialize(&data).unwrap();
-					requester.send(&serialized, 0).unwrap();
-					requester.send(Message::from("F"), 0).unwrap(); // Indicates finished
-					println!("Finished");
-					return;
+			}
+			*/
+			println!("{:?}", self.addr);
+			stream = TcpStream::connect(&self.addr).wait().unwrap();
+			let mut data: Vec<T> = Vec::new();
+			// Fill batch vector
+			for _i in 0..self.send_size {
+				match self.client.poll() {
+					Ok(Async::Ready(Some(value))) => { 
+						data.push(value);
+					}
+					Ok(Async::Ready(None)) => { 
+						// Send whatever is left and disconnect
+						let serialized = serialize(&data).unwrap();
+						match stream.write_all(&serialized[..]) {
+							Ok(_) => (),
+							Err(e) => {
+								println!("{:?}", e);
+							}
+						}
+						
+						loop {
+							match TcpStream::connect(&self.addr).poll() {
+								Ok(Async::Ready(ref mut s)) => {
+									s.write_all(b"F").unwrap();
+									break;
+								}
+								Ok(Async::NotReady) => (),
+								Err(e) => {
+									// Connection error, sleep for 1 sec and try again (only 5 times)
+									println!("{:?}", e);
+								}
+							}
+						}
+						println!("Dropping...");
+						return Ok(Async::Ready(()));
+					}
+					Ok(Async::NotReady) => (),
+					Err(e) => {
+						println!("{:?}", e);
+					}
+				}
+				
+			}
+			
+			// Serialize and send full vector
+			let serialized = serialize(&data).unwrap();
+			match stream.write_all(&serialized[..]) {
+				Ok(_) => (),
+				Err(e) => {
+					println!("{:?}", e);
 				}
 			}
 		}
-		let serialized = serialize(&data).unwrap();
-		//println!("Sending {:?}", data);
-		requester.send(&serialized, 0).unwrap();
 	}
 }
+
 
 /* Config Loading */
 
 pub struct Config
 {
-	protocol: String,
     address: String,
-	port: u16,
-	id: [u8; 5],
+    port: u16,
     config :Box<Value>
 }
 
@@ -210,17 +301,7 @@ pub fn load_config(config_file: &str) -> Config
             panic!("{:?}", e)
         }
     };
-	let config = raw_string.parse::<Value>().unwrap();
-	
-	let protocol = match config.get("protocol") {
-        Some(value) => {
-            match value.as_str().expect("Protocol must be provided as a string") {
-                "tcp" => "tcp",
-                _ => panic!("Unsupported protocol")
-            }
-        }
-        None => "tcp"
-    };
+    let config = raw_string.parse::<Value>().unwrap();
 
     let addr = config.get("address")
                         .expect("Address must be provided")
@@ -236,34 +317,11 @@ pub fn load_config(config_file: &str) -> Config
             tmp
         }
         None => panic!("Port number must be specified"),
-	};
-	
-	// This is the identity for ZMQ
-    let id = match config.get("id") {
-        Some(value) => {
-            let arr = value.as_array().expect("The ID must be specified as an array of 5 integers");
-            if arr.len() != 5 { panic!("The ID must be specified as an array of length 5") }
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = arr[i].as_integer().expect("Each element in the ID array must be an integer") as u8;
-            }
-            idarr
-        }
-        None => {
-            // Random ID
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = random::<u8>();
-            }
-            idarr
-        },
     };
 
     Config {
-		protocol: String::from(protocol),
         address: String::from(addr),
-		port: port,
-		id: id.clone(),
+        port: port,
 		config: Box::new(config)
     }
     
@@ -323,7 +381,7 @@ fn load_common_client_configs(client_config: &Value) -> ClientCommonConfig {
 			/* let freq_start = Some(start);
 			let freq_interval = Some(interval); */
 
-			Frequency::Delayed(interval_at(start,interval))
+			Frequency::Delayed(Interval::new(start,interval))
 		}
 		None => Frequency::Immediate,
 	};
@@ -340,10 +398,10 @@ fn load_common_client_configs(client_config: &Value) -> ClientCommonConfig {
  * Loads clients from the given config toml::Value
  * Returns the testdict; the signals and the dispatchers have their reference editted
  */
-fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>)>
+fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T, Error=()> + Sync + Send + Unpin>)>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FromStr + From<f32> + Unpin,
 {	
-	let mut clients: Vec<(u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>)> = Vec::new();
+	let mut clients: Vec<(u64, Box<dyn Stream<Item=T, Error=()> + Sync + Send + Unpin>)> = Vec::new();
 	/* Construct the clients */
 	for client_config in config.get("clients")
 		.expect("At least one client must be provided")
@@ -378,7 +436,7 @@ fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> 
 					None => DEFAULT_DELIM,
 				};
 
-				let this_client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match reader_type {
+				let this_client: Box<(dyn Stream<Item=T, Error=()> + Sync + Send + Unpin)> = match reader_type {
 					"NewlineAndSkip" => {
 
 						let skip_val = match params.get("skip") {
@@ -401,7 +459,7 @@ fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> 
 					}
 				}
 				let params = client_config.get("params").expect("The generator client type requires a params table");
-				let this_client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match client_config.get("gen_type")
+				let this_client: Box<(dyn Stream<Item=T, Error=()> + Sync + Send + Unpin)> = match client_config.get("gen_type")
 					.expect("The gen client must be provided a gen type field")
 					.as_str()
 					.expect("The gen type must be provided as a string")
