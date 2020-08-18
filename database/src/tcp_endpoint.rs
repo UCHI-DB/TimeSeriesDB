@@ -23,6 +23,7 @@ use std::collections::VecDeque;
 /* USING STD TCPSTREAM/TCPLISTEN */
 /* SEE COMMENTED SECTION FOR TOKIO - for some reason TcpListener is always not ready... */
 
+
 pub struct TcpEndpoint<T> 
 {
 	port: u16,
@@ -110,6 +111,7 @@ impl<T> Stream for TcpEndpoint<T>
 }
 
 /*
+
 pub struct TcpEndpoint<T> 
 {
 	port: u16,
@@ -197,7 +199,7 @@ impl<T> Stream for TcpEndpoint<T>
 							}
 						}
 						Ok(Async::NotReady) => {
-							println!("listener not ready");
+							//println!("listener not ready");
 							return Ok(Async::NotReady);
 						}
 						Err(e) => {

@@ -4,7 +4,7 @@ use futures::stream::StreamExt;
 use futures::sink::SinkExt;
 use futures::executor::block_on;
 use futures::task::{Spawn, SpawnExt};
-use tokio::runtime::Builder;
+use tokio::runtime::{Runtime, Builder};
 use futures::executor::ThreadPool;
 use futures::executor::ThreadPoolBuilder;
 use futures::channel::mpsc::{TryRecvError, Receiver, Sender, channel};
@@ -12,6 +12,13 @@ use std::collections::{HashMap,HashSet};
 use fnv::{FnvHashMap, FnvBuildHasher};
 use std::thread;
 use zmq::Socket;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+mod mapping_server;
+use mapping_server::MappingServer;
 
 /* Dummy server for ZMQClient that deserialize, hashes, and sends to appropriate MPSC queue 
  * to figure out where the bottle neck is
@@ -251,6 +258,28 @@ async fn run_async(mut receiver: Receiver<f32>, mut remote_clients: FnvHashMap<u
 	zmq_count
 }
 
+async fn run_tcp() -> u64 {
+    let mut listener = TcpListener::bind("0.0.0.0:5556").await.unwrap();
+    let mut buffer = [0; 4096];
+    let mut count: u64 = 0;
+    loop {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let recv_size = socket.read(&mut buffer).await.unwrap();
+        if recv_size <= 1 {
+            break;
+        }
+        else {
+            match bincode::deserialize::<Vec<f32>>(&buffer[0..recv_size]) {
+                Ok(data) => { count += data.len() as u64; }
+                Err(e) => {println!("{:?}", e);}
+            }
+        }
+
+    }
+    return count;
+
+}
+
 
 fn main() {
 	let args: Vec<String> = std::env::args().collect();
@@ -267,8 +296,21 @@ fn main() {
 	remote_clients.shrink_to_fit();
 	let mut recv_counter: u64 = 0;
 	
+    let mut mapping: HashMap<u64, u16, FnvBuildHasher> = FnvHashMap::default();
+    mapping.insert(10, 5556);
+    let mut ms = MappingServer::new(mapping, 5555);
+    let cont = Arc::new(AtomicBool::new(true));
+
 	let now = Instant::now();
 	let recv_counter = match args[1].as_str() {
+        "tcp" => {
+		drop(router);
+		let mut rt = Runtime::new().unwrap();
+        	thread::spawn(move || {
+                	&ms.run::<f32>(cont);
+	            });
+	        rt.block_on(run_tcp())
+        }
 		"a" => {
 			let mut rt = Builder::new().threaded_scheduler().core_threads(2).build().unwrap();
 			let queue_count_f = rt.spawn(recv_async(receiver));
@@ -283,7 +325,8 @@ fn main() {
 		"t" => {
 			run_sync(receiver, &mut remote_clients, router)
 		}
-		"h" => {
+		
+        "h" => {
 			run_hash_only(receiver, &mut remote_clients, router)
 		}
 		"d" => {
