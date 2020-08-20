@@ -44,7 +44,62 @@ type = "Clock" # Necessary, required to indicate what buffer should be used
 	id = 11
 	type = "remote"
 	port = 5557
-
+	[clients.client2]
+	id = 12
+	type = "remote"
+	port = 5558
+	[clients.client3]
+	id = 13
+	type = "remote"
+	port = 5559
+	[clients.client4]
+	id = 14
+	type = "remote" # used to indicate that it should be a file
+	port = 5560
+	[clients.client5]
+	id = 15
+	type = "remote"
+	port = 5561
+	[clients.client6]
+	id = 16
+	type = "remote"
+	port = 5562
+	[clients.client7]
+	id = 17
+	type = "remote"
+	port = 5563
+	[clients.client8]
+	id = 18
+	type = "remote" # used to indicate that it should be a file
+	port = 5564
+	[clients.client9]
+	id = 19
+	type = "remote"
+	port = 5565
+	[clients.client10]
+	id = 20
+	type = "remote"
+	port = 5566
+	[clients.client11]
+	id = 21
+	type = "remote"
+	port = 5567
+	[clients.client12]
+	id = 22
+	type = "remote" # used to indicate that it should be a file
+	port = 5568
+	[clients.client13]
+	id = 23
+	type = "remote"
+	port = 5569
+	[clients.client14]
+	id = 24
+	type = "remote"
+	port = 5570
+	[clients.client15]
+	id = 25
+	type = "remote"
+	port = 5571
 [mapping_server]
 	[mapping_server.server0]
 	port = 5555

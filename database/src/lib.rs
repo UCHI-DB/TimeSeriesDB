@@ -595,7 +595,8 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 				.expect("Failed to produce the custom runtime")
 		}
 	};
-
+	
+	let curr_time = Instant::now();
 	/* Use constructed runtime to create signals */
 	let executor = rt.executor();
 	let mut spawn_handles: Vec<oneshot::SpawnHandle<Option<SystemTime>,()>> = Vec::new();
@@ -640,7 +641,8 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		Ok(_) => (),
 		Err(_) => panic!("Failed to shutdown properly"),
 	}
-
+	let elapsed = curr_time.elapsed();
+	println!("Global time: {:?}", elapsed);
 }
 
 

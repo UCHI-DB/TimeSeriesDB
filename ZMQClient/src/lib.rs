@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use bincode::{deserialize, serialize};
 
 // tokio
-use tokio::runtime::Runtime;
+use tokio::runtime::{Runtime, Builder};
 use tokio::stream::{Stream, StreamExt};
 use futures::prelude::Future;
 use futures::future::join_all;
@@ -59,7 +59,10 @@ pub fn run_client(config_file: &str, send_size: usize)
 {
     
 	let config = load_config(config_file);
-	let mut rt = Runtime::new().expect("tokio runtime failure");
+	let mut rt = Builder::new()
+		.threaded_scheduler()
+		.core_threads(8)
+		.build().expect("tokio runtime failure");
 	
 	// Receive initial mapping
 	let context = zmq::Context::new();
@@ -89,7 +92,6 @@ pub fn run_client(config_file: &str, send_size: usize)
 fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
     let requester = context.socket(zmq::DEALER).unwrap();
 	requester.set_identity(&config.id).unwrap();
-	println!("Send1");
 	let five_sec = Duration::from_secs(5);
     loop {
         match requester.connect(format!("{}://{}:{}", config.protocol, config.address, config.port).as_str()) {
@@ -98,11 +100,9 @@ fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64
         }
 	}
 	
-	println!("Send2");
 	let mut buffer = [0; 1024];
 	loop {
 		requester.send(Message::from(""), 0).unwrap();
-		println!("Send3");
 		match requester.recv_into(&mut buffer, 0) {
 			Ok(recv_size) => {
 				match bincode::deserialize::<(&str, HashMap<u64, u16, FnvBuildHasher>)>(&buffer[0..recv_size]) {

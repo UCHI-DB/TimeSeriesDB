@@ -36,21 +36,22 @@ type = "Clock" # Necessary, required to indicate what buffer should be used
 
 # At least one client must be created, otherwise nothing would happen
 [clients]
-
 	[clients.client0]
 	id = 10
 	type = "remote" # used to indicate that it should be a file
+	port = 5556
 	[clients.client1]
 	id = 11
-	type = "remote" # used to indicate that it should be a file
+	type = "remote"
+	port = 5557
 	[clients.client2]
 	id = 12
-	type = "remote" # used to indicate that it should be a file
+	type = "remote"
+	port = 5558
 	[clients.client3]
 	id = 13
-	type = "remote" # used to indicate that it should be a file
-
-[dispatchers]
-	[dispatchers.dispatcher0]
-	id = 100
+	type = "remote"
+	port = 5559
+[mapping_server]
+	[mapping_server.server0]
 	port = 5555
