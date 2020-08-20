@@ -1,15 +1,12 @@
 #[macro_use]
 extern crate serde_derive;
 extern crate bincode;
-#[macro_use]
-extern crate futures;
+#[macro_use] extern crate futures;
 extern crate toml_loader;
-#[macro_use]
-extern crate queues;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate ndarray;
+#[macro_use] extern crate queues;
+#[macro_use] extern crate lazy_static;
+#[macro_use] extern crate itertools;
+#[macro_use] extern crate ndarray;
 extern crate ndarray_linalg;
 
 use rand::prelude::*;
@@ -40,11 +37,16 @@ use std::convert::TryFrom;
 mod buffer_pool;
 mod dictionary;
 mod file_handler;
-mod segment;
+pub mod segment;
 pub mod methods;
+pub mod simd;
 mod future_signal;
-mod client;
+pub mod client;
 mod query;
+pub mod compress;
+pub mod pscan;
+pub mod knn;
+// pub mod plot;
 mod tree;
 mod stats;
 mod btree;
@@ -71,7 +73,7 @@ use crate::compression_demon::CompressionDemon;
 use std::thread;
 use std::fs::File;
 use crate::kernel::Kernel;
-use crate::methods::compress::{GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, GorillaCompress, CompressionMethod};
+use crate::methods::compress::{GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, CompressionMethod};
 use crate::methods::Methods::Fourier;
 use crate::methods::gorilla_encoder::GorillaEncoder;
 

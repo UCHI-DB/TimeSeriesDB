@@ -8,18 +8,19 @@ use std::fs::File;
 use std::io::{LineWriter, Write};
 use croaring::Bitmap;
 use rust_decimal::prelude::*;
+use histogram::Histogram;
 
 /// END_MARKER is a special bit sequence used to indicate the end of the stream
 pub const EXP_MASK: u64 = 0b0111111111110000000000000000000000000000000000000000000000000000;
 pub const FIRST_ONE: u64 = 0b1000000000000000000000000000000000000000000000000000000000000000;
-
+pub const NEG_ONE: u64 = 0b1111111111111111111111111111111111111111111111111111111111111111;
 
 pub struct PrecisionBound {
     position: u64,
     precision: f64,
     precision_exp : i32,
     int_length: u64,
-    decimal_length: u64
+    decimal_length: u64,
 }
 
 
@@ -30,6 +31,7 @@ impl PrecisionBound {
         e.precision_exp = ((xu & EXP_MASK) >> 52) as i32 - 1023 as i32;
         e
     }
+
 
     pub fn precision_bound(&mut self, orig: f64)-> f64{
         let a = 0u64;
@@ -62,7 +64,6 @@ impl PrecisionBound {
             // find the first bit where is bounded
             while !bounded{
                 if self.position==0 {
-                    info!("full precision.");
                     break;
                 }
                 self.position-=1;
@@ -116,24 +117,25 @@ impl PrecisionBound {
         (self.int_length, self.decimal_length)
     }
 
+    #[inline]
     pub fn set_length(&mut self, ilen:u64, dlen:u64){
         self.decimal_length = dlen;
         self.int_length = ilen;
     }
 
-    // this is for taxi dataset
-    pub fn fast_fetch_components(& self, bd:f64) -> (i64,u64){
+    // this is for dataset with same power of 2, power>1
+    #[inline]
+    pub fn fast_fetch_components_large(& self, bd:f64,exp:i32) -> (i64,u64){
         let bdu = unsafe { mem::transmute::<f64, u64>(bd) };
-        let exp = 6 as i32;
         // let sign = bdu&FIRST_ONE;
         let mut int_part = 0u64;
         let mut dec_part = 0u64;
         let dec_move = 64u64-self.decimal_length;
         // if exp>=0{
-        //     dec_part = bdu << (12 + exp) as u64;
-        //     int_part = (((bdu << 12) >> 1)| FIRST_ONE )>> (11+52-exp) as u64;
-        dec_part = bdu << 18 as u64;
-        int_part = ((bdu << 11)| FIRST_ONE )>> 57 as u64;
+        dec_part = bdu << (12 + exp) as u64;
+        int_part = ((bdu << 11)| FIRST_ONE )>> (63-exp) as u64;
+        // dec_part = bdu << 18 as u64;
+        // int_part = ((bdu << 11)| FIRST_ONE )>> 57 as u64;
         // }else if exp<self.precision_exp{
         //     dec_part=0u64;
         // }else{
@@ -145,6 +147,7 @@ impl PrecisionBound {
         (int_part as i64,dec_part >> dec_move)
     }
 
+    #[inline]
     pub fn fetch_components(& self, bd:f64) -> (i64,u64){
         let bdu = unsafe { mem::transmute::<f64, u64>(bd) };
         let exp = ((bdu & EXP_MASK) >> 52) as i32 - 1023 as i32;
@@ -154,17 +157,50 @@ impl PrecisionBound {
         // todo: check whether we can remove those if branch
         if exp>=0{
             dec_part = bdu << (12 + exp) as u64;
-            // int_part = (((bdu << 12) >> 1)| FIRST_ONE )>> (11+52-exp) as u64;
+            int_part = ((bdu << 11)| FIRST_ONE )>> (63-exp) as u64;
+            if sign!=0{
+                int_part = !int_part;
+                dec_part = !dec_part + 1;
+            }
         }else if exp<self.precision_exp{
             dec_part=0u64;
+            if sign!=0{
+                int_part = NEG_ONE;
+                dec_part = !dec_part;
+            }
         }else{
             dec_part = ((bdu << (11)) | FIRST_ONE) >> ((-exp - 1) as u64);
+            if sign!=0{
+                int_part = NEG_ONE;
+                dec_part = !dec_part;
+            }
         }
-        // int_part = int_part|sign;
-        // let signed_int = unsafe { mem::transmute::<u64, i64>(int_part) };
-        let signed_int = bd.trunc() as i64;
-        (signed_int,dec_part >> 64u64-self.decimal_length)
+
+        let signed_int = unsafe { mem::transmute::<u64, i64>(int_part) };
+        //let signed_int = bd.trunc() as i64;
+        (signed_int, dec_part >> 64u64-self.decimal_length)
     }
+
+
+    ///byte aligned version of spilt double
+    #[inline]
+    pub fn fetch_fixed_aligned(&self, bd:f64) -> i64{
+        let bdu = unsafe { mem::transmute::<f64, u64>(bd) };
+        let exp = ((bdu & EXP_MASK) >> 52) as i32 - 1023 as i32;
+        let sign = bdu&FIRST_ONE;
+        let mut fixed = 0u64;
+        if exp<self.precision_exp{
+            fixed = 0u64;
+        }else{
+            fixed = ((bdu << (11)) | FIRST_ONE) >> (63-exp-self.decimal_length as i32) as u64;
+        }
+        if sign!=0{
+            fixed = !(fixed-1);
+        }
+        let signed_int = unsafe { mem::transmute::<u64, i64>(fixed) };
+        signed_int
+    }
+
 
     pub fn finer(&self, input:f64) -> Vec<u8>{
         print!("finer results:");
@@ -216,7 +252,7 @@ impl PrecisionBound {
         vec
     }
 
-
+    #[inline]
     pub fn is_bounded(&self, a:f64, b:f64)-> bool{
         let delta =  a-b;
         if delta.abs()<self.precision{
@@ -229,6 +265,16 @@ impl PrecisionBound {
 
 pub fn to_u32(slice: &[u8]) -> u32 {
     slice.iter().rev().fold(0, |acc, &b| acc*2 + b as u32)
+}
+
+pub fn get_precision_bound(precision: i32) -> f64{
+    let mut str = String::from("0.");
+    for pos in 0..precision{
+        str.push('0');
+    }
+    str.push_str("49");
+    let error = str.parse().unwrap();
+    error
 }
 
 
@@ -532,4 +578,67 @@ fn test_decimal() {
 
     println!("{}",scaled.to_string());
     println!("example: {}",example.to_string());
+}
+
+#[test]
+fn test_varible_length_hist() {
+    let file_iter = construct_file_iterator_skip_newline::<f64>("../UCRArchive2018/Kernel/randomwalkdatasample1k-40k", 0, ',');
+    let file_vec: Vec<f64> = file_iter.unwrap().collect();
+    let clone_vec = file_vec.clone();
+    let mut histogram = Histogram::new();
+    let mut dec_hist = Histogram::new();
+
+    let mut bound = PrecisionBound::new(0.0000005);
+    let start = Instant::now();
+    for val in file_vec{
+
+        let bd = bound.precision_bound(val);
+        bound.cal_length(bd);
+        histogram.increment(bound.get_length().1);
+
+    }
+    let duration = start.elapsed();
+    println!("Time elapsed in cal_length is: {:?}", duration);
+    // print percentiles from the histogram
+    println!("Percentiles: p50: {} ns p90: {} ns p99: {} ns p999: {}",
+             histogram.percentile(50.0).unwrap(),
+             histogram.percentile(90.0).unwrap(),
+             histogram.percentile(99.0).unwrap(),
+             histogram.percentile(99.9).unwrap(),
+    );
+
+    println!("Latency (ns): Min: {} Avg: {} Max: {} StdDev: {}",
+             histogram.minimum().unwrap(),
+             histogram.mean().unwrap(),
+             histogram.maximum().unwrap(),
+             histogram.stddev().unwrap(),
+    );
+
+    let start = Instant::now();
+    for val in clone_vec{
+        let cur_str = val.to_string();
+        let string:  Vec<&str> = cur_str.split('.').collect();
+        if string.len()>1{
+            dec_hist.increment(string.get(1).unwrap().len() as u64);
+        }
+        else { dec_hist.increment(0); }
+    }
+    let duration = start.elapsed();
+    println!("Time elapsed in checking bits is: {:?}", duration);
+
+    println!("Percentiles: p10: {} ns p15: {} ns p50: {} ns p90: {}",
+             dec_hist.percentile(10.0).unwrap(),
+             dec_hist.percentile(15.0).unwrap(),
+             dec_hist.percentile(50.0).unwrap(),
+             dec_hist.percentile(90.0).unwrap(),
+    );
+
+    println!("Latency (ns): Min: {} Avg: {} Max: {} StdDev: {}",
+             dec_hist.minimum().unwrap(),
+             dec_hist.mean().unwrap(),
+             dec_hist.maximum().unwrap(),
+             dec_hist.stddev().unwrap(),
+    );
+
+
 }

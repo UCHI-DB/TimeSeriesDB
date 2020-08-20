@@ -8,7 +8,7 @@ use std::fmt::Debug;
 use serde::{Serialize, Deserialize};
 
 pub const MAX_BITS: usize = 32;
-const BYTE_BITS: usize = 8;
+pub const BYTE_BITS: usize = 8;
 
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +99,40 @@ impl<'a> BitPack<&'a mut [u8]> {
         }
         Ok(())
     }
+
+    /***
+    read bits less then BYTE_BITS
+     */
+    pub fn write_bits(&mut self, mut value: u32, mut bits: usize) -> Result<(), usize> {
+        if self.buff.len() * BYTE_BITS < self.sum_bits() + bits {
+            return Err(bits);
+        }
+        value &= ((1 << bits) - 1) as u32;
+
+        loop {
+            let bits_left = BYTE_BITS - self.bits;
+
+            if bits <= bits_left {
+                self.buff[self.cursor] |= (value as u8) << self.bits as u8;
+                self.bits += bits;
+
+                if self.bits >= BYTE_BITS {
+                    self.cursor += 1;
+                    self.bits = 0;
+                }
+
+                break
+            }
+
+            let bb = value & ((1 << bits_left) - 1) as u32;
+            self.buff[self.cursor] |= (bb as u8) << self.bits as u8;
+            self.cursor += 1;
+            self.bits = 0;
+            value >>= bits_left as u32;
+            bits -= bits_left;
+        }
+        Ok(())
+    }
 }
 
 
@@ -149,25 +183,90 @@ impl<'a> BitPack<&'a [u8]> {
         Ok(output)
     }
 
+    /***
+    read bits less then BYTE_BITS
+     */
 
+    #[inline]
+    pub fn read_bits(&mut self, mut bits: usize) -> Result<u8, usize> {
+        if self.buff.len() * BYTE_BITS < self.sum_bits() + bits {
+            println!("buff length: {}, cursor: {}, bits: {}", self.buff.len(), self.cursor,self.bits);
+            return Err(bits);
+        };
+
+        let mut bits_left = 0;
+        let mut output = 0;
+        loop {
+            let byte_left = BYTE_BITS - self.bits;
+
+            if bits <= byte_left {
+                let mut bb = self.buff[self.cursor] as u32;
+                bb >>= self.bits as u32;
+                bb &= ((1 << bits) - 1) as u32;
+                output |= bb << bits_left;
+                self.bits += bits;
+                break
+            }
+
+            let mut bb = self.buff[self.cursor] as u32;
+            bb >>= self.bits as u32;
+            bb &= ((1 << byte_left) - 1) as u32;
+            output |= bb << bits_left;
+            self.bits += byte_left;
+            bits_left += byte_left as u32;
+            bits -= byte_left;
+
+            if self.bits >= BYTE_BITS {
+                self.cursor += 1;
+                self.bits -= BYTE_BITS;
+            }
+        }
+        Ok(output as u8)
+    }
+
+    #[inline]
+    pub fn finish_read_byte(&mut self){
+        self.cursor += 1;
+        self.bits = 0;
+        // println!("cursor now at {}" , self.cursor)
+    }
+
+    #[inline]
+    pub fn read_byte(&mut self) -> Result<u8, usize> {
+        self.cursor += 1;
+        let output = self.buff[self.cursor] as u8;
+        Ok(output)
+    }
+
+    #[inline]
+    pub fn read_n_byte(&mut self,n:usize) -> Result<&[u8], usize> {
+        self.cursor += 1;
+        let end = self.cursor+n;
+        let output = &self.buff[self.cursor..end];
+        self.cursor += n-1;
+        Ok(output)
+    }
+
+    #[inline]
+    pub fn skip_n_byte(&mut self, mut n: usize) -> Result<(), usize> {
+        self.cursor += n;
+        // println!("current cursor{}, current bits:{}",self.cursor,self.bits);
+        Ok(())
+    }
+    #[inline]
     pub fn skip(&mut self, mut bits: usize) -> Result<(), usize> {
         if self.buff.len() * BYTE_BITS < self.sum_bits() + bits {
             return Err(bits);
         };
         // println!("current cursor{}, current bits:{}",self.cursor,self.bits);
         // println!("try to skip {} bits",bits);
-        let byte_left = BYTE_BITS - self.bits;
-        if (bits<=byte_left){
-            self.bits += bits;
-        }
-        else {
-            self.cursor += 1;
-            let remains = (bits-byte_left);
-            let bytes = remains/BYTE_BITS;
-            let left = remains%BYTE_BITS;
-            self.cursor += bytes;
-            self.bits = left;
-        }
+        let bytes = bits/BYTE_BITS;
+        let left = bits%BYTE_BITS;
+
+        let cur_bits = (self.bits +left);
+        self.cursor = self.cursor + bytes + cur_bits/BYTE_BITS;
+        self.bits = cur_bits%BYTE_BITS;
+
         // println!("current cursor{}, current bits:{}",self.cursor,self.bits);
         Ok(())
     }
@@ -200,6 +299,7 @@ impl BitPack<Vec<u8>> {
     /// # assert_eq!(bitpack.read(10).unwrap(), 1021);
     /// # assert_eq!(bitpack.read(2).unwrap(), 3);
     /// ```
+    #[inline]
     pub fn write(&mut self, value: u32, bits: usize) -> Result<(), usize> {
         let len = self.buff.len();
 
@@ -221,7 +321,51 @@ impl BitPack<Vec<u8>> {
         Ok(())
     }
 
+    /***
+    read bits less then BYTE_BITS
+     */
+    #[inline]
+    pub fn write_bits(&mut self, value: u32, bits: usize) -> Result<(), usize> {
+        let len = self.buff.len();
+
+        if let Some(bits) = (self.sum_bits() + bits).checked_sub(len * BYTE_BITS) {
+            self.buff.resize(len + (bits + BYTE_BITS - 1) / BYTE_BITS, 0x0);
+        }
+
+        let mut bitpack = BitPack {
+            buff: self.buff.as_mut_slice(),
+            cursor: self.cursor,
+            bits: self.bits
+        };
+
+        bitpack.write_bits(value, bits)?;
+
+        self.bits = bitpack.bits;
+        self.cursor = bitpack.cursor;
+
+        Ok(())
+    }
+
+
+
+    #[inline]
+    pub fn write_byte(&mut self, value: u8) -> Result<(), usize> {
+        self.buff.push(value);
+        Ok(())
+    }
+
+    #[inline]
+    pub fn finish_write_byte(&mut self) {
+        let len = self.buff.len();
+        self.buff.resize(len + 1, 0x0);
+        self.bits = 0;
+        self.cursor = len;
+        // println!("cursor now at {}" , self.cursor)
+    }
+
+    #[inline]
     pub fn into_vec(self) -> Vec<u8> {
+        // println!("buff length: {}, cursor: {}, bits: {}", self.buff.len(), self.cursor,self.bits);
         self.buff
     }
 }
@@ -237,7 +381,7 @@ pub(crate) fn num_bits(mydata: &[u32]) -> u8{
 }
 
 pub(crate) fn delta_num_bits(mydata: &[i32]) -> (i32, u8,Vec<u32>){
-    info!("10th vec: {},{},{},{}", mydata[0],mydata[1],mydata[2],mydata[3]);
+    // info!("10th vec: {},{},{},{}", mydata[0],mydata[1],mydata[2],mydata[3]);
     let mut vec = Vec::new();
     let mut xor:u32 = 0;
     let mut delta = 0u32;
@@ -258,6 +402,46 @@ pub(crate) fn delta_num_bits(mydata: &[i32]) -> (i32, u8,Vec<u32>){
     let bits:u8 = (32 -lead) as u8;
     info!("10th vec: {},{},{},{}", vec[0],vec[1],vec[2],vec[3]);
     (min, bits, vec)
+}
+
+/*
+zigzag encoding: Maps negative values to positive values while going back and
+  forth (0 = 0, -1 = 1, 1 = 2, -2 = 3, 2 = 4, -3 = 5, 3 = 6 ...)
+ */
+#[inline]
+pub fn zigzag(origin: i32) -> u32{
+    let zzu = (origin << 1) ^ (origin >> 31);
+    let orgu= unsafe { mem::transmute::<i32, u32>(zzu) };
+    orgu
+}
+
+#[inline]
+pub fn unzigzag(origin: u32) -> i32{
+    let zzu = (origin >> 1) as i32 ^ -((origin & 1) as i32);
+    zzu
+}
+
+// delta calculation for sprintz
+pub(crate) fn zigzag_delta_num_bits(mydata: &[i32]) -> (i32, u8,Vec<u32>){
+    info!("10th vec: {},{},{},{}", mydata[0],mydata[1],mydata[2],mydata[3]);
+    let mut vec = Vec::new();
+    let mut xor:u32 = 0;
+    let mut delta = 0i32;
+    let mut zz = 0u32;
+    let base = mydata[0];
+    let mut pre = mydata[0];
+
+    for &b in mydata {
+        delta = b - pre;
+        zz = zigzag(delta);
+        vec.push(zz);
+        xor = xor | zz;
+        pre = b;
+    }
+    let lead = xor.leading_zeros();
+    let bits:u8 = (32 -lead) as u8;
+    info!("10th vec: {},{},{},{}", vec[0],vec[1],vec[2],vec[3]);
+    (base, bits, vec)
 }
 
 pub(crate) fn delta_64num_bits(mydata: &[i64]) -> (u8,Vec<u64>){
@@ -325,17 +509,18 @@ pub(crate) fn split_64num_bits(mydata: &[i64], scl: usize) -> (i32, u8,Vec<u64>,
     let mut delta = 0u64;
     let mut min = 0i64;
     let minValue = mydata.iter().min();
-    //let maxValue = mydata.iter().max();
-    //println!("min:{}, max:{}",minValue.unwrap(),maxValue.unwrap());
+    let maxValue = mydata.iter().max();
+    println!("min:{}, max:{}",minValue.unwrap(),maxValue.unwrap());
     info!("min value:{}",minValue.unwrap());
     match minValue {
         Some(&val) => min = val,
         None => panic!("empty"),
     }
     let mut min_int = min/scl as i64;
-    if min_int < 0{
+    if min < 0{
         min_int -= 1;
     }
+    println!("min int: {}", min_int);
     min = min_int * scl as i64;
 
 
@@ -441,6 +626,34 @@ pub(crate) fn bp_double_encoder<'a, T>(mydata: &[T], scl:usize) -> Vec<u8>
     let ldata: Vec<i32> = mydata.into_iter().map(|x| ((*x).into()* scl as f64).ceil() as i32).collect::<Vec<i32>>();
     let (base, num_bits, delta_vec) = delta_num_bits(ldata.as_ref());
     println!("base int:{}",base);
+    println!("Number of bits: {}", num_bits);
+    // info!("10th vec: {},{},{},{}", delta_vec[0],delta_vec[1],delta_vec[2],delta_vec[3]);
+    let ubase_int = unsafe { mem::transmute::<i32, u32>(base) };
+    let mut bitpack_vec = BitPack::<Vec<u8>>::with_capacity(8);
+    bitpack_vec.write(ubase_int,32);
+    bitpack_vec.write(delta_vec.len() as u32, 32);
+    bitpack_vec.write(num_bits as u32, 8);
+    let mut i =0 ;
+    for &b in delta_vec.as_slice() {
+        // if i<10{
+        //     println!("{}th value: {}",i,b);
+        // }
+        // i+=1;
+        bitpack_vec.write(b, num_bits as usize).unwrap();
+
+    }
+    let vec = bitpack_vec.into_vec();
+    info!("Length of compressed data: {}", vec.len());
+    let ratio= vec.len() as f32 / (mydata.len() as f32*mem::size_of::<T>() as f32);
+    print!("{}",ratio);
+    vec
+}
+
+pub(crate) fn sprintz_double_encoder<'a, T>(mydata: &[T], scl:usize) -> Vec<u8>
+    where T: Serialize + Clone+ Copy+Into<f64> + Deserialize<'a>{
+    let ldata: Vec<i32> = mydata.into_iter().map(|x| ((*x).into()* scl as f64).ceil() as i32).collect::<Vec<i32>>();
+    let (base, num_bits, delta_vec) = zigzag_delta_num_bits(ldata.as_ref());
+    println!("base int:{}",base);
     info!("Number of bits: {}", num_bits);
     info!("10th vec: {},{},{},{}", delta_vec[0],delta_vec[1],delta_vec[2],delta_vec[3]);
     let ubase_int = unsafe { mem::transmute::<i32, u32>(base) };
@@ -465,9 +678,10 @@ pub(crate) fn bp_double_encoder<'a, T>(mydata: &[T], scl:usize) -> Vec<u8>
 }
 
 
+
 pub(crate) fn split_double_encoder<'a, T>(mydata: &[T], scl:usize) -> Vec<u8>
     where T: Serialize + Clone+ Copy+Into<f64> + Deserialize<'a>{
-    let ldata: Vec<i64> = mydata.into_iter().map(|x| ((*x).into()* scl as f64).ceil() as i64).collect::<Vec<i64>>();
+    let ldata: Vec<i64> = mydata.into_iter().map(|x| ((*x).into()* scl as f64) as i64).collect::<Vec<i64>>();
     let (base_int, int_bits, int_vec,dec_bits,dec_vec) = split_64num_bits(ldata.as_slice(),scl);
     println!("base int:{}",base_int);
     println!("Number of int bits: {}; number of decimal bits: {}", int_bits, dec_bits);
@@ -608,6 +822,16 @@ fn test_xor_f64() {
     }
 }
 
+#[test]
+fn test_zigzag(){
+    let org =  0i32;
+    println!("zigzag:{}",unzigzag(1));
+    assert_eq!(unzigzag(zigzag(org)),org);
+    assert_eq!(unzigzag(zigzag(1)),1);
+    assert_eq!(unzigzag(zigzag(-1)),-1);
+    assert_eq!(unzigzag(zigzag(100)),100);
+    assert_eq!(unzigzag(zigzag(-100)),-100);
+}
 
 #[test]
 fn test_xor_on_file() {
