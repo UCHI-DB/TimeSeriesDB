@@ -11,7 +11,7 @@ segment_size = 1000 # write this line before any [_] are encountered
 # Not-Necessary, but if one value is provided then the other
 # must also be set as well
 [runtime]
-core_threads = 8 # Indicates the number of cores to use
+core_threads = 1 # Indicates the number of cores to use
 blocking_threads = 100 # Indicates the max number of "futures"
 					   # that can be spawned on the constructed runtime
 
@@ -49,8 +49,13 @@ type = "Clock" # Necessary, required to indicate what buffer should be used
         		mean = 0.0 # Sets the mean
         		std = 1.0 # Sets the standard deviation
 #	[clients.client0]
-#	id = 10
-#	type = "remote" # used to indicate that it should be a file
+#	type = "file" # used to indicate that it should be a file
+#		[clients.client0.params]
+#		path = "UCRArchive2018/Trace/Trace_TEST.tsv" #path to file
+#		dict = "UCRArchive2018/Kernel/dict.tsv" #path to dictionary fil
+#		reader_type = "NewlineAndSkip" # The type of file reader to use
+#		delim = "," # The delimiter between each value
+#		skip = 0 # How many values to initially skip
 
 [dispatchers]
 	[dispatchers.dispatcher0]

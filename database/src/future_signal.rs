@@ -11,8 +11,6 @@ use crate::segment::{Segment,SegmentKey};
 use std::time::SystemTime;
 use std::time::{Duration,Instant};
 use std::{mem, thread};
-use tokio::prelude::*;
-use tokio::runtime::{Builder,Runtime};
 use crate::query::{Count, Max, Sum, Average};
 use ndarray::Array2;
 use nalgebra::Matrix2;
@@ -21,14 +19,26 @@ use rustfft::FFTnum;
 use num::Float;
 use ndarray_linalg::Lapack;
 use std::ptr::null;
-use futures::sync::oneshot;
+
+use tokio::runtime::Builder; // Used for testing
+use tokio::stream::Stream;
+use futures::prelude::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll}; // Added in updating tokio
+use std::ops::{Deref, DerefMut};
 
 pub type SignalId = u64;
 const DEFAULT_BATCH_SIZE: usize = 50;
 
+/*
+TODO
+Updated to most recent version of Tokio/Future.
+Needs revision regarding Unpin requirements & self.get_mut()
+*/
+
 pub struct BufferedSignal<T,U,F,G> 
 	where T: Copy + Send,
-	      U: Stream,	
+	      U: Stream<Item=T>,	
 	      F: Fn(usize,usize) -> bool,
 	      G: Fn(&mut Segment<T>)
 {
@@ -39,8 +49,8 @@ pub struct BufferedSignal<T,U,F,G>
 	signal_id: SignalId,
 	data: Vec<T>,
 	time_lapse: Vec<Duration>,
-	signal: U,
-	buffer: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
+	signal: U, // Relies on structural pinning
+	buffer: Arc<Mutex<dyn SegmentBuffer<T> + Send + Sync>>,
 	split_decider: F,
 	compress_func: G,
 	compress_on_segmentation: bool,
@@ -52,13 +62,13 @@ pub struct BufferedSignal<T,U,F,G>
 /* Fix the buffer to not require broad locking it */
 impl<T,U,F,G> BufferedSignal<T,U,F,G> 
 	where T: Copy + Send+ FFTnum + Float + Lapack,
-		  U: Stream,
+		  U: Stream<Item=T>,
 		  F: Fn(usize,usize) -> bool,
 		  G: Fn(&mut Segment<T>)
 {
 
 	pub fn new(signal_id: u64, signal: U, seg_size: usize, 
-		buffer: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
+		buffer: Arc<Mutex<dyn SegmentBuffer<T> + Send + Sync>>,
 		split_decider: F, compress_func: G, 
 		compress_on_segmentation: bool, dict: Option<Array2<T>>)
 		-> BufferedSignal<T,U,F,G> 
@@ -109,22 +119,22 @@ impl<T,U,F,G> BufferedSignal<T,U,F,G>
    			having the signal neeed to exhaust the stream
  */
 impl<T,U,F,G> Future for BufferedSignal<T,U,F,G> 
-	where T: Copy + Send+ FFTnum+ Float+Lapack,
-		  U: Stream<Item=T,Error=()>,
-		  F: Fn(usize,usize) -> bool,
-		  G: Fn(&mut Segment<T>)
+	where T: Copy + Send + FFTnum + Float + Lapack + Unpin,
+		  U: Stream<Item=T> + Unpin,
+		  F: Fn(usize,usize) -> bool + Unpin,
+		  G: Fn(&mut Segment<T>) + Unpin
 {
-	type Item  = Option<SystemTime>;
-	type Error = ();
+	type Output  = Option<SystemTime>;
 
-	fn poll(&mut self) -> Poll<Option<SystemTime>,()> {
+	fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
 		let mut batch_vec: Vec<T> = Vec::new();
 		let mut bsize = 0;
 		self.start = Some(Instant::now());
 		loop {
-			match self.signal.poll() {
-				Ok(Async::NotReady) => (),
-				Ok(Async::Ready(None)) => {
+			let pinned_signal = Pin::new(&mut self.signal);
+			match pinned_signal.poll_next(cx) {
+				Poll::Pending => { return Poll::Pending; }
+				Poll::Ready(None) => {
 					let elapse: Duration = self.start.unwrap().elapsed();
 					if self.compress_on_segmentation {
 						let percentage = self.compression_percentage / (self.segments_produced as f64);
@@ -135,15 +145,15 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 						println!("{},{:?},{:?}", self.segments_produced, elapse, (self.segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
 					}
 					
-					return Ok(Async::Ready(self.prev_seg_offset))
+					return Poll::Ready(self.prev_seg_offset)
 				}
-				Err(e) => {
+				/* Err(e) => {
 					println!("The client signal produced an error: {:?}", e);
 					/* Implement an error log to indicate a dropped value */
 					/* Continue to run and silence the error for now */
 					return Err(e);
-				}
-				Ok(Async::Ready(Some(value))) => {
+				} */
+				Poll::Ready(Some(value)) => {
 
 					let cur_time    = SystemTime::now();
 					if let None = self.timestamp {
@@ -152,9 +162,10 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 					};
 
 					/* case where the value reaches split size */
-					if (self.split_decider)(self.data.len(), self.seg_size) {
-						let data = mem::replace(&mut self.data, Vec::with_capacity(self.seg_size));
-						let time_lapse = mem::replace(&mut self.time_lapse, Vec::with_capacity(self.seg_size));
+					let seg_size = self.seg_size;
+					if (self.split_decider)(self.data.len(), seg_size) {
+						let data = mem::replace(&mut self.data, Vec::with_capacity(seg_size));
+						let time_lapse = mem::replace(&mut self.time_lapse, Vec::with_capacity(seg_size));
 						let old_timestamp = mem::replace(&mut self.timestamp, Some(cur_time));
 						let prev_seg_offset = mem::replace(&mut self.prev_seg_offset, old_timestamp);
 						let dur_offset = match prev_seg_offset {
@@ -219,7 +230,7 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 
 pub struct NonStoredSignal<T,U,F,G> 
 	where T: Copy + Send,
-	      U: Stream,
+	      U: Stream<Item=T>,
 	      F: Fn(usize,usize) -> bool,
 	      G: Fn(&mut Segment<T>)
 {
@@ -240,7 +251,7 @@ pub struct NonStoredSignal<T,U,F,G>
 /* Fix the buffer to not require broad locking it */
 impl<T,U,F,G> NonStoredSignal<T,U,F,G> 
 	where T: Copy + Send,
-		  U: Stream,
+		  U: Stream<Item=T>,
 		  F: Fn(usize,usize) -> bool,
 		  G: Fn(&mut Segment<T>)
 {
@@ -279,19 +290,19 @@ impl<T,U,F,G> NonStoredSignal<T,U,F,G>
    			having the signal neeed to exhaust the stream
  */
 impl<T,U,F,G> Future for NonStoredSignal<T,U,F,G> 
-	where T: Copy + Send,
-		  U: Stream<Item=T,Error=()>,
-		  F: Fn(usize,usize) -> bool,
-		  G: Fn(&mut Segment<T>)
+	where T: Copy + Send + Unpin,
+		  U: Stream<Item=T> + Unpin,
+		  F: Fn(usize,usize) -> bool + Unpin,
+		  G: Fn(&mut Segment<T>) + Unpin
 {
-	type Item  = Option<SystemTime>;
-	type Error = ();
+	type Output = Option<SystemTime>;
 
-	fn poll(&mut self) -> Poll<Option<SystemTime>,()> {
+	fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
 		loop {
-			match self.signal.poll() {
-				Ok(Async::NotReady) => return Ok(Async::NotReady),
-				Ok(Async::Ready(None)) => {
+			let pinned_signal = unsafe { Pin::new(&mut self.signal) };
+			match pinned_signal.poll_next(cx) {
+				Poll::Pending => return Poll::Pending,
+				Poll::Ready(None) => {
 					if self.compress_on_segmentation {
 						let percentage = self.compression_percentage / (self.segments_produced as f64);
 						println!("Signal {} produced {} segments with a compression percentage of {}", self.signal_id, self.segments_produced, percentage);
@@ -299,14 +310,14 @@ impl<T,U,F,G> Future for NonStoredSignal<T,U,F,G>
 						println!("Signal {} produced {} segments", self.signal_id, (self.segments_produced as usize)/self.seg_size);
 					}
 					
-					return Ok(Async::Ready(self.prev_seg_offset))
+					return Poll::Ready(self.prev_seg_offset)
 				}
-				Err(e) => {
+				/* Err(e) => {
 					println!("The client signal produced an error: {:?}", e);
 					/* Implement an error log to indicate a dropped value */
 					/* Continue to run and silence the error for now */
-				}
-				Ok(Async::Ready(Some(value))) => {
+				} */
+				Poll::Ready(Some(value)) => {
 
 					let cur_time    = SystemTime::now();
 					if let None = self.timestamp {
@@ -314,9 +325,10 @@ impl<T,U,F,G> Future for NonStoredSignal<T,U,F,G>
 					};
 
 					/* case where the value reaches split size */
+					let seg_size = self.seg_size;
 					if (self.split_decider)(self.data.len(), self.seg_size) {
-						let data = mem::replace(&mut self.data, Vec::with_capacity(self.seg_size));
-						let time_lapse = mem::replace(&mut self.time_lapse, Vec::with_capacity(self.seg_size));
+						let data = mem::replace(&mut self.data, Vec::with_capacity(seg_size));
+						let time_lapse = mem::replace(&mut self.time_lapse, Vec::with_capacity(seg_size));
 						let old_timestamp = mem::replace(&mut self.timestamp, Some(cur_time));
 						let prev_seg_offset = mem::replace(&mut self.prev_seg_offset, old_timestamp);
 						let dur_offset = match prev_seg_offset {
@@ -419,20 +431,21 @@ impl<T,U,F,G,V> StoredSignal<T,U,F,G,V>
    			having the signal neeed to exhaust the stream
  */
 impl<T,U,F,G,V> Future for StoredSignal<T,U,F,G,V> 
-	where T: Copy + Send + Serialize + DeserializeOwned + FromStr,
-		  U: Stream<Item=T,Error=()>,
-		  F: Fn(usize,usize) -> bool,
-		  G: Fn(&mut Segment<T>),
-		  V: AsRef<[u8]>,
+	where T: Copy + Send + Serialize + DeserializeOwned + FromStr + Unpin,
+		  U: Stream<Item=T> + Unpin,
+		  F: Fn(usize,usize) -> bool + Unpin,
+		  G: Fn(&mut Segment<T>) + Unpin,
+		  V: AsRef<[u8]> + Unpin,
 {
-	type Item  = Option<SystemTime>;
-	type Error = ();
+	type Output = Option<SystemTime>;
 
-	fn poll(&mut self) -> Poll<Option<SystemTime>,()> {
+	fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
 		loop {
-			match self.signal.poll() {
-				Ok(Async::NotReady) => return Ok(Async::NotReady),
-				Ok(Async::Ready(None)) => {
+			//let pinned_signal = unsafe { self.map_unchecked_mut(|this| &mut this.signal) };
+			let pinned_signal = Pin::new(&mut self.signal);
+			match pinned_signal.poll_next(cx) {
+				Poll::Pending => return Poll::Pending,
+				Poll::Ready(None) => {
 					if self.compress_on_segmentation {
 						let percentage = self.compression_percentage / (self.segments_produced as f64);
 						println!("Signal {} produced {} segments with a compression percentage of {}", self.signal_id, self.segments_produced, percentage);
@@ -440,14 +453,14 @@ impl<T,U,F,G,V> Future for StoredSignal<T,U,F,G,V>
 						println!("Signal {} produced {} segments", self.signal_id, (self.segments_produced as usize)/self.seg_size);
 					}
 					
-					return Ok(Async::Ready(self.prev_seg_offset))
+					return Poll::Ready(self.prev_seg_offset)
 				}
-				Err(e) => {
+				/* Err(e) => {
 					println!("The client signal produced an error: {:?}", e);
 					/* Implement an error log to indicate a dropped value */
 					/* Continue to run and silence the error for now */
-				}
-				Ok(Async::Ready(Some(value))) => {
+				} */
+				Poll::Ready(Some(value)) => {
 
 					let cur_time    = SystemTime::now();
 					if let None = self.timestamp {
@@ -455,9 +468,10 @@ impl<T,U,F,G,V> Future for StoredSignal<T,U,F,G,V>
 					};
 
 					/* case where the value reaches split size */
+					let seg_size = self.seg_size;
 					if (self.split_decider)(self.data.len(), self.seg_size) {
-						let data = mem::replace(&mut self.data, Vec::with_capacity(self.seg_size));
-						let time_lapse = mem::replace(&mut self.time_lapse, Vec::with_capacity(self.seg_size));
+						let data = mem::replace(&mut self.data, Vec::with_capacity(seg_size));
+						let time_lapse = mem::replace(&mut self.time_lapse, Vec::with_capacity(seg_size));
 						let old_timestamp = mem::replace(&mut self.timestamp, Some(cur_time));
 						let prev_seg_offset = mem::replace(&mut self.prev_seg_offset, old_timestamp);
 						let dur_offset = match prev_seg_offset {
@@ -537,15 +551,22 @@ fn run_dual_signals() {
 		_ => panic!("Failed to build runtime"),
 	};
 
-	let (seg_key1,seg_key2) = match rt.block_on(sig1.join(sig2)) {
+
+	let result = rt.block_on(async move {
+		try_join!(sig1, sig2)
+	});
+
+	let (seg_key1,seg_key2) = match result {
 		Ok((Some(time1),Some(time2))) => (SegmentKey::new(time1,1),SegmentKey::new(time2,2)),
 		_ => panic!("Failed to get the last system time for signal1 or signal2"),
 	};
+	/*
+	Since we use block_on, is it necessary to shutdown at all?
 
 	match rt.shutdown_on_idle().wait() {
 		Ok(_) => (),
 		Err(_) => panic!("Failed to shutdown properly"),
-	}
+	} */
 
 	let mut buf = match Arc::try_unwrap(buffer) {
 		Ok(lock) => match lock.into_inner() {
@@ -644,7 +665,10 @@ fn run_single_signals() {
 //		oneshot::spawn(sig2, &rt2.executor());
 //	});
 
-	let (seg_key1,seg_key2) = match rt.block_on(sig2.join(sig1)) {
+	let result = rt.block_on(async move {
+		try_join!(sig1, sig2)
+	});
+	let (seg_key1,seg_key2) = match result {
 		Ok((Some(time1),Some(time2))) => (SegmentKey::new(time1,1),SegmentKey::new(time2,2)),
 		_ => panic!("Failed to get the last system time for signal1 or signal2"),
 	};

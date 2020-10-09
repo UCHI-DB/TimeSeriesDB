@@ -11,7 +11,7 @@ segment_size = 1000 # write this line before any [_] are encountered
 # Not-Necessary, but if one value is provided then the other
 # must also be set as well
 [runtime]
-core_threads = 8 # Indicates the number of cores to use
+core_threads = 1 # Indicates the number of cores to use
 blocking_threads = 100 # Indicates the max number of "futures"
 					   # that can be spawned on the constructed runtime
 

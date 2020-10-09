@@ -1,7 +1,7 @@
 extern crate bincode;
 
 // Queue communication
-use futures::sync::mpsc::Sender;
+use futures::channel::mpsc::Sender;
 // Stopping dispatcher
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

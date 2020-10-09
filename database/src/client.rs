@@ -3,8 +3,6 @@ use std::thread;
 use std::marker::PhantomData;
 use serde::de::DeserializeOwned;
 use std::sync::Mutex;
-use futures::stream::iter_ok;
-use tokio::timer::Interval;
 use std::time::Instant;
 use std::io::{BufReader,BufRead};
 use std::str::FromStr;
@@ -17,7 +15,12 @@ use rand::prelude::*;
 use std::sync::RwLock;
 use crate::buffer_pool::ClockBuffer;
 use std::sync::Arc;
+
+use tokio::time::Interval;
 use tokio::prelude::*;
+use tokio::stream::{Stream, iter};
+use std::pin::Pin;
+use std::task::{Context, Poll}; // Added in updating tokio
 
 use crate::future_signal::BufferedSignal;
 use ndarray::{Array1, Array2};
@@ -42,7 +45,7 @@ pub enum Frequency {
 
 
 pub struct Client<T,U> 
-	where T: Stream<Item=U,Error=()>
+	where T: Stream<Item=U>
 {
 	producer: T,
 	amount: Amount,
@@ -54,8 +57,8 @@ pub struct Client<T,U>
 
 pub fn client_from_stream<T,U>(producer: T, amount: Amount, run_period: RunPeriod,
 			   frequency: Frequency)
-			    -> impl Stream<Item=U,Error=()>
-	where T: Stream<Item=U,Error=()>,
+			    -> impl Stream<Item=U>
+	where T: Stream<Item=U> + Unpin, U: Unpin
 {
 	let produced = match amount {
 		Amount::Limited(_) => Some(0),
@@ -74,8 +77,8 @@ pub fn client_from_stream<T,U>(producer: T, amount: Amount, run_period: RunPerio
 
 pub fn client_from_iter<T,U>(producer: T, amount: Amount, run_period: RunPeriod,
 				   frequency: Frequency)
-				    -> impl Stream<Item=U,Error=()>
-	where T: Iterator<Item=U>
+				    -> impl Stream<Item=U>
+	where T: Iterator<Item=U>, U: Unpin
 {
 	let produced = match amount {
 		Amount::Limited(_) => Some(0),
@@ -83,7 +86,7 @@ pub fn client_from_iter<T,U>(producer: T, amount: Amount, run_period: RunPeriod,
 	};
 
 	Client { 
-		producer:iter_ok(producer),
+		producer: iter(producer),
 		amount: amount,
 		run_period: run_period,
 		frequency: frequency,
@@ -94,24 +97,23 @@ pub fn client_from_iter<T,U>(producer: T, amount: Amount, run_period: RunPeriod,
 
 
 impl<T,U> Stream for Client<T,U> 
-	where T: Stream<Item=U,Error=()>
+	where T: Stream<Item=U> + Unpin, U: Unpin
 {
 	type Item = U;
-	type Error = ();
+	
+	fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
 
-	fn poll(&mut self) -> Poll<Option<U>,()> {
-		
 		/* Terminate stream if hit time-limit */
 		if let RunPeriod::Finite(dur) = self.run_period {
 			let now = Instant::now();
 			let time = now.duration_since(self.start); 
-			if time >= dur { return Ok(Async::Ready(None)) }
+			if time >= dur { return Poll::Ready(None) }
 		}
 
 		/* Terminate stream if hit max production */
 		if let Amount::Limited(max_items) = self.amount {
 			if let Some(items) = self.produced {
-				if items >= max_items { return Ok(Async::Ready(None)) }
+				if items >= max_items { return Poll::Ready(None) }
 			}
 		}
 
@@ -119,27 +121,24 @@ impl<T,U> Stream for Client<T,U>
 		 * immediately get the value depending on Frequency Mode
 		 * Must call poll on the stream within the client
 		 */
-		match &mut self.frequency {
+
+		match self.frequency {
 			Frequency::Immediate => {
-				let poll_val = try_ready!(self.producer.poll());
-				Ok(Async::Ready(poll_val))
+				return Pin::new(&mut self.producer).poll_next(cx);
 			}
-			Frequency::Delayed(interval) => {
-				match interval.poll() {
-					Ok(Async::NotReady) => Ok(Async::NotReady),
-					Err(e) => { 
+			Frequency::Delayed(ref mut interval) => {
+				match Pin::new(interval).poll_next(cx) {
+					Poll::Pending => Poll::Pending,
+					/* Err(e) => { 
 						println!("{:?}", e); 
 						Err(())
-					}
+					} */
 					_ =>  {
-						let poll_val = try_ready!(self.producer.poll());
-						Ok(Async::Ready(poll_val))
+						return T::poll_next(Pin::new(&mut self.producer), cx);
 					}
 				}
-				
 			}
 		}
-
 	}
 }
 
@@ -230,8 +229,8 @@ pub fn construct_file_iterator_int_signed(file: &str, skip_val: usize, delim: ch
 
 pub fn construct_file_client<T>(file: &str, delim: u8, amount: Amount, 
 						 run_period: RunPeriod, frequency: Frequency)
-						 -> Result<impl Stream<Item=T,Error=()>,()> 
-	where T: DeserializeOwned
+						 -> Result<impl Stream<Item=T>,()> 
+	where T: DeserializeOwned + Unpin
 {
 	let producer = construct_file_iterator::<T>(file, delim)?;
 	Ok(client_from_iter(producer, amount, run_period, frequency))
@@ -240,8 +239,8 @@ pub fn construct_file_client<T>(file: &str, delim: u8, amount: Amount,
 /* An example of how to combine an iterator and IterClient constructor */
 pub fn construct_file_client_skip_newline<T>(file: &str, skip_val: usize, delim: char, amount: Amount, run_period: RunPeriod,
 				   		 frequency: Frequency)
-				    	 -> Result<impl Stream<Item=T,Error=()>,()>
-	where T: FromStr,
+				    	 -> Result<impl Stream<Item=T>,()>
+	where T: FromStr + Unpin,
 {
 	let producer = construct_file_iterator_skip_newline::<T>(file, skip_val, delim)?;
 	Ok(client_from_iter(producer, amount, run_period, frequency))
@@ -292,8 +291,8 @@ impl<T,U,V> Iterator for BasicItemGenerator<T,U,V>
 
 pub fn construct_gen_client<T,U,V>(dist: U, 
 		amount: Amount, run_period: RunPeriod, frequency: Frequency) 
-			-> impl Stream<Item=V,Error=()>
-		where V: From<T>,
+			-> impl Stream<Item=V>
+		where V: From<T> + Unpin,
 			  U: Distribution<T>,
 
 {
@@ -335,8 +334,8 @@ impl<V> Iterator for NormalDistItemGenerator<V>
 
 pub fn construct_normal_gen_client<T>(mean: f64, std: f64, 
 	amount: Amount, run_period: RunPeriod, frequency: Frequency)
-		-> impl Stream<Item=T,Error=()> 
-	where T: From<f32>,
+		-> impl Stream<Item=T> 
+	where T: From<f32> + Unpin,
 {
 	let producer = NormalDistItemGenerator::<T>::new(mean,std);
 	client_from_iter(producer, amount, run_period, frequency)

@@ -26,13 +26,19 @@ use crate::future_signal::{BufferedSignal};
 use std::path::Path;
 use toml_loader::{Loader};
 use toml::Value;
-use std::time::{Duration,Instant};
-use tokio::timer::Interval;
-use tokio::prelude::*;
-use tokio::runtime::{Builder};
-use futures::sync::oneshot;
 use std::sync::{Arc,Mutex};
 use std::convert::TryFrom;
+use std::io::Read;
+
+use tokio::time::{Instant, Duration, Interval, interval_at};
+use tokio::runtime::Builder; // Used for testing
+use tokio::stream::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll}; // Added in updating tokio
+use futures::prelude::Future;
+use futures::future::join_all;
+use futures::channel::oneshot;
+use futures::channel::mpsc::{channel, Receiver, Sender};
 
 mod buffer_pool;
 mod dictionary;
@@ -61,9 +67,7 @@ use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
 use tcp_endpoint::TcpEndpoint;
 use mapping_server::MappingServer;
 use std::collections::{HashMap,HashSet};
-use std::collections::hash_map::RandomState;
 use fnv::{FnvHashMap, FnvBuildHasher};
-use futures::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use ndarray::Array2;
 use rustfft::FFTnum;
@@ -82,7 +86,7 @@ const DEFAULT_BUF_SIZE: usize = 150;
 const DEFAULT_DELIM: char = '\n';
 
 pub fn run_test<T: 'static>(config_file: &str)
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32> + Unpin,
 //		  f64: std::convert::From<T>,
 //		  f32: std::convert::From<T>
 
@@ -153,7 +157,7 @@ pub fn run_test<T: 'static>(config_file: &str)
 		None => DEFAULT_BUF_SIZE,
 	};
 
-	let buf_option: Option<Box<Arc<Mutex<(SegmentBuffer<T> + Send + Sync)>>>> = match fm {
+	let buf_option: Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>> = match fm {
 		Some(fm) => {
 			match config.lookup("buffer") {
 					Some(config) => {
@@ -181,7 +185,7 @@ pub fn run_test<T: 'static>(config_file: &str)
 	};
 
     /* Create buffer for compression segments*/
-    let compre_buf_option: Option<Box<Arc<Mutex<(SegmentBuffer<T> + Send + Sync)>>>> = match fm_comp {
+    let compre_buf_option: Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>> = match fm_comp {
         Some(fm) => {
             match config.lookup("buffer") {
                 Some(config) => {
@@ -209,7 +213,7 @@ pub fn run_test<T: 'static>(config_file: &str)
     };
 
 	/* Construct the clients */
-	let mut signals: Vec<Box<(Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>> = Vec::new();
+	let mut signals: Vec<Box<(dyn Future<Output=Option<SystemTime>> + Send + Sync + Unpin)>> = Vec::new();
 	let mut rng = thread_rng();
 	let mut signal_id = rng.gen();
 
@@ -279,7 +283,7 @@ pub fn run_test<T: 'static>(config_file: &str)
 				};
 
 				let start = Instant::now() + Duration::new(start_secs,start_nano_secs);
-				Frequency::Delayed(Interval::new(start,interval))
+				Frequency::Delayed(interval_at(start,interval))
 			}
 			None => Frequency::Immediate,
 		};
@@ -317,7 +321,7 @@ pub fn run_test<T: 'static>(config_file: &str)
 
 				testdict = dict.clone();
 
-				let client: Box<(Stream<Item=T,Error=()> + Sync + Send)> = match reader_type {
+				let client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match reader_type {
 					"NewlineAndSkip" => {
 
 						let skip_val = match params.lookup("skip") {
@@ -347,7 +351,7 @@ pub fn run_test<T: 'static>(config_file: &str)
 					}
 				}
 				let params = client_config.lookup("params").expect("The generator client type requires a params table");
-				let client: Box<(Stream<Item=T,Error=()> + Sync + Send)> = match client_config.lookup("gen_type")
+				let client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match client_config.lookup("gen_type")
 								   .expect("The gen client must be provided a gen type field")
 								   .as_str()
 								   .expect("The gen type must be provided as a string")
@@ -409,9 +413,10 @@ pub fn run_test<T: 'static>(config_file: &str)
 //	let mut compress_demon2:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf2.unwrap(),*comp_buf2.unwrap(),None,0.1,0.1,FourierCompress::new(10,1));
 
 	/* Construct the runtime */
-	let rt = match config.lookup("runtime") {
+	let mut rt = match config.lookup("runtime") {
 		None => Builder::new()
-					.after_start(|| println!("Threads have been constructed"))
+					.on_thread_start(|| println!("Threads have been constructed"))
+					.threaded_scheduler()
 					.build()
 					.expect("Failed to produce a default runtime"),
 
@@ -428,8 +433,9 @@ pub fn run_test<T: 'static>(config_file: &str)
 
 			Builder::new()
 					.core_threads(core_threads)
-					.blocking_threads(blocking_threads)
-					.after_start(|| println!("Threads have been constructed"))
+					.max_threads(blocking_threads) // TODO previously blocking_threads: does it have the same functionality?
+					.on_thread_start(|| println!("Threads have been constructed"))
+					.threaded_scheduler()
 					.build()
 					.expect("Failed to produce the custom runtime")
 		}
@@ -441,15 +447,13 @@ pub fn run_test<T: 'static>(config_file: &str)
 		println!("segment commpressed: {}", compress_demon.get_processed() );
 	});
 
-	let executor = rt.executor();
+	/* let executor = rt.executor();
 
 	let mut spawn_handles: Vec<oneshot::SpawnHandle<Option<SystemTime>,()>> = Vec::new();
 
 	for sig in signals {
 		spawn_handles.push(oneshot::spawn(sig, &executor))
-	}
-
-
+	} */
 
 //	let handle1 = thread::spawn(move || {
 //		println!("Run compression demon 1" );
@@ -463,28 +467,39 @@ pub fn run_test<T: 'static>(config_file: &str)
 //		println!("segment commpressed: {}", compress_demon2.get_processed() );
 //	});
 
-	for sh in spawn_handles {
+	/* for sh in spawn_handles {
 		match sh.wait() {
 			Ok(Some(x)) => println!("Produced a timestamp: {:?}", x),
 			_ => println!("Failed to produce a timestamp"),
 		}
+	} */
+
+	//let join_handles = rt.spawn();
+	let results = rt.block_on(async move {
+		join_all(signals).await
+	});
+	for result in results {
+		match result {
+			Some(x) => println!("Produced a timestamp: {:?}", x),
+			_ => println!("Failed to produce a timestamp"),
+		}
 	}
 
-	handle.join().unwrap();
+	//handle.join().unwrap();
 	//handle1.join().unwrap();
 	//handle2.join().unwrap();
 
-	match rt.shutdown_on_idle().wait() {
+	/* match rt.shutdown_on_idle().wait() {
 		Ok(_) => (),
 		Err(_) => panic!("Failed to shutdown properly"),
-	}
+	} */
 
 }
 
 
 
 pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32> + Unpin,
 {
 	/* Loading the config file as toml::Value
 	 * toml-loader was causing issues with different versions of toml
@@ -508,7 +523,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	let (buf_option, compre_buf_option): (Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>, Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>) = load_buffer(&config, fm, fm_comp);
 
 	/* Client loading */
-	let mut signals: Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>> = Vec::new();
+	let mut signals: Vec<Box<(dyn Future<Output=Option<SystemTime>> + Send + Sync + Unpin)>> = Vec::new();
 	let mut mapping =  FnvHashMap::default();
 	let cx = Arc::new(zmq::Context::new());
 	match load_clients(&config, &mut signals, &mut mapping, &buf_option, cx.clone()) {
@@ -572,9 +587,10 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	}
 
 	/* Construct the runtime */
-	let rt = match config.get("runtime") {
+	let mut rt = match config.get("runtime") {
 		None => Builder::new()
-			.after_start(|| println!("Threads have been constructed"))
+			.on_thread_start(|| println!("Threads have been constructed"))
+			.threaded_scheduler()
 			.build()
 			.expect("Failed to produce a default runtime"),
 
@@ -591,20 +607,20 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 			
 			Builder::new()
 				.core_threads(core_threads)
-				.blocking_threads(blocking_threads)
-				.after_start(|| println!("Threads have been constructed"))
+				.max_threads(blocking_threads) // TODO previously blocking_threads: does it have the same functionality?
+				.on_thread_start(|| println!("Threads have been constructed"))
+				.threaded_scheduler()
 				.build()
 				.expect("Failed to produce the custom runtime")
 		}
 	};
 	
-	let curr_time = Instant::now();
 	/* Use constructed runtime to create signals */
-	let executor = rt.executor();
+	/* let executor = rt.executor();
 	let mut spawn_handles: Vec<oneshot::SpawnHandle<Option<SystemTime>,()>> = Vec::new();
 	for sig in signals {
 		spawn_handles.push(oneshot::spawn(sig, &executor))
-	}
+	} */
 
 	/* Construct dispatcher threads */
 	let mut mappingserv_handles: Vec<thread::JoinHandle<_>> = Vec::with_capacity(mapping_servers.len());
@@ -620,12 +636,29 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	}
 
 	/* Wait for the future signals to finish. */
-	for sh in spawn_handles {
-		match sh.wait() {
+	let mut joins = Vec::new();
+	for sig in signals {
+		joins.push(rt.spawn(async move {
+			sig.await
+		}));
+	}
+
+	let curr_time = Instant::now();
+	let results = rt.block_on(join_all(joins));
+	for result in results {
+		match result {
 			Ok(Some(x)) => println!("Produced a timestamp: {:?}", x),
 			_ => println!("Failed to produce a timestamp"),
 		}
 	}
+	let elapsed = curr_time.elapsed();
+	
+	/* for sh in spawn_handles {
+		match sh.wait() {
+			Ok(Some(x)) => println!("Produced a timestamp: {:?}", x),
+			_ => println!("Failed to produce a timestamp"),
+		}
+	} */
 	/* Signals have all joined, so tell dispatcher to stop running */
 	for end_flag in mappingserv_continue {
 		end_flag.store(false, Ordering::Release);
@@ -639,11 +672,11 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	*/
 	
 	// Wait until the runtime becomes idle and shut it down.
-	match rt.shutdown_on_idle().wait() {
+	/* match rt.shutdown_on_idle().wait() {
 		Ok(_) => (),
 		Err(_) => panic!("Failed to shutdown properly"),
-	}
-	let elapsed = curr_time.elapsed();
+	} */
+	
 	println!("Global time: {:?}", elapsed);
 }
 
@@ -847,7 +880,7 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
 			/* let freq_start = Some(start);
 			let freq_interval = Some(interval); */
 
-			Frequency::Delayed(Interval::new(start,interval))
+			Frequency::Delayed(interval_at(start,interval))
 		}
 		None => Frequency::Immediate,
 	};
@@ -866,12 +899,12 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
  * Returns the testdict; the signals and the dispatchers have their reference editted
  */
 fn load_clients<T>(config: &Value,
-	signals: &mut Vec<Box<(dyn Future<Item=Option<SystemTime>,Error=()> + Send + Sync)>>,
+	signals: &mut Vec<Box<(dyn Future<Output=Option<SystemTime>> + Send + Sync + Unpin)>>,
 	mapping: &mut HashMap<u64, u16, FnvBuildHasher>,
 	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,
 	cx: Arc<zmq::Context>)
 	-> Option<Array2<T>>
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32> + Unpin,
 {
 	/* Get segment size */
 	let seg_size = config
@@ -928,7 +961,7 @@ fn load_clients<T>(config: &Value,
 
 				testdict = dict.clone();
 
-				let client: Box<(dyn Stream<Item=T,Error=()> + Sync + Send)> = match reader_type {
+				let client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match reader_type {
 					"NewlineAndSkip" => {
 
 						let skip_val = match params.get("skip") {
@@ -955,7 +988,7 @@ fn load_clients<T>(config: &Value,
 					}
 				}
 				let params = client_config.get("params").expect("The generator client type requires a params table");
-				let client: Box<(dyn Stream<Item=T,Error=()> + Sync + Send)> = match client_config.get("gen_type")
+				let client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match client_config.get("gen_type")
 					.expect("The gen client must be provided a gen type field")
 					.as_str()
 					.expect("The gen type must be provided as a string")
