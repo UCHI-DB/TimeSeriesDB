@@ -27,6 +27,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll}; // Added in updating tokio
 use std::ops::{Deref, DerefMut};
 
+use stream_wrap::StreamWrap;
+
 pub type SignalId = u64;
 const DEFAULT_BATCH_SIZE: usize = 50;
 
@@ -35,6 +37,171 @@ TODO
 Updated to most recent version of Tokio/Future.
 Needs revision regarding Unpin requirements & self.get_mut()
 */
+
+pub struct BufferedSignalReduced<T,U,F,G> 
+	where T: Copy + Send,
+	      U: Stream<Item=T>,	
+	      F: Fn(usize,usize) -> bool,
+	      G: Fn(&mut Segment<T>)
+{
+	seg_size: usize,
+	signal_id: SignalId,
+	signal: U, // Relies on structural pinning
+	buffer: Arc<Mutex<dyn SegmentBuffer<T> + Send + Sync>>,
+	split_decider: F,
+	compress_func: G,
+	compress_on_segmentation: bool,
+	kernel: Option<Kernel<T>>
+}
+
+impl<T,U,F,G> BufferedSignalReduced<T,U,F,G> 
+	where T: Copy + Send+ FFTnum + Float + Lapack,
+		  U: Stream<Item=T>,
+		  F: Fn(usize,usize) -> bool,
+		  G: Fn(&mut Segment<T>)
+{
+
+	pub fn new(signal_id: u64, signal: U, seg_size: usize, 
+		buffer: Arc<Mutex<dyn SegmentBuffer<T> + Send + Sync>>,
+		split_decider: F, compress_func: G, 
+		compress_on_segmentation: bool, dict: Option<Array2<T>>)
+		-> BufferedSignalReduced<T,U,F,G> 
+	{
+		let mut kernel:Option<Kernel<T>>= match dict {
+			// The division was valid
+			Some(x) => {
+				let mut kernel_dict = Kernel::new(x.clone(), 1, 4, DEFAULT_BATCH_SIZE);
+				kernel_dict.dict_pre_process();
+				Some(kernel_dict)
+			},
+			// The division was invalid
+			None => None,
+		};
+
+		BufferedSignalReduced {
+			seg_size: seg_size,
+			signal_id: signal_id,
+			signal: signal,
+			buffer: buffer,
+			split_decider: split_decider,
+			compress_func: compress_func,
+			compress_on_segmentation: compress_on_segmentation,
+			kernel: kernel,
+		}
+	}
+}
+
+
+async fn run_buffered_signal<T,U,F,G>(mut bs: BufferedSignalReduced<T,U,F,G>)
+		-> Option<SystemTime>
+	where T: Copy + Send + Unpin,
+		U: StreamWrap<T> + Unpin,	
+		F: Fn(usize,usize) -> bool + Unpin,
+		G: Fn(&mut Segment<T>) + Unpin
+{
+	// Interal variables to manage state
+	let mut timestamp: Option<SystemTime> = None;
+	let mut prev_seg_offset: Option<SystemTime> = None;
+	let mut data: Vec<T> = Vec::with_capacity(seg_size);
+	let mut time_lapse: Vec<Duration> = Vec::with_capacity(seg_size);
+	let mut compression_percentage: f64 = 0.0;
+	let mut segments_produced: u32 = 0;
+
+	let mut batch_vec: Vec<T> = Vec::new();
+	let mut bsize = 0;
+	
+	let start = Instant::now();
+	let mut timestamp = SystemTime::now();
+
+	// Actual running
+	loop {
+		match bs.signal.next().await {
+			None => {
+				let elapse: Duration = start.elapsed();
+				if bs.compress_on_segmentation {
+					let percentage = compression_percentage / (segments_produced as f64);
+					println!("Signal: {}\n Segments produced: {}\n Compression percentage: {}\n Time: {:?}", bs.signal_id, segments_produced, percentage, elapse);
+				} else {
+					//self.buffer.lock().unwrap().flush();
+					println!("Signal: {}\n Segments produced: {}\n Data points in total {} \n Time: {:?}\n Throughput: {:?} points/second", bs.signal_id, (segments_produced as usize)/bs.seg_size, segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
+					println!("{},{:?},{:?}", segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
+				}
+				return prev_seg_offset;
+			}
+			/* Err(e) => {
+				println!("The client signal produced an error: {:?}", e);
+				/* Implement an error log to indicate a dropped value */
+				/* Continue to run and silence the error for now */
+				return Err(e);
+			} */
+			Some(value) => {
+				let cur_time = SystemTime::now();
+
+				/* case where the value reaches split size */
+				let seg_size = bs.seg_size;
+				if (bs.split_decider)(data.len(), seg_size) {
+					let old_data = mem::replace(&mut data, Vec::with_capacity(seg_size));
+					let old_time_lapse = mem::replace(&mut time_lapse, Vec::with_capacity(seg_size));
+					let old_timestamp = mem::replace(&mut timestamp, cur_time);
+					let old_prev_seg_offset = mem::replace(&mut prev_seg_offset, Some(old_timestamp));
+					let dur_offset = match old_prev_seg_offset {
+						Some(t) => match old_timestamp.duration_since(t) {
+							Ok(d) => Some(d),
+							Err(_) => panic!("Hard Failure, since messes up implicit chain"),
+						}
+						None => None,
+					};
+					//todo: adjust logics here to fix kernel method.
+					if bsize<DEFAULT_BATCH_SIZE{
+						//batch_vec.extend(&data);
+						//bsize= bsize+1;
+					}
+					else {
+						bsize = 0;
+						let belesize = batch_vec.len();
+						println!("vec for matrix length: {}", belesize);
+						let mut x = Array2::from_shape_vec((DEFAULT_BATCH_SIZE,bs.seg_size),mem::replace(&mut batch_vec, Vec::with_capacity(belesize))).unwrap();
+						println!("matrix shape: {} * {}", x.rows(), x.cols());
+						match &bs.kernel{
+							Some(kn) => kn.run(x),
+							None => (),
+						};
+						println!("new vec for matrix length: {}", batch_vec.len());
+					}
+
+					let mut seg = Segment::new(None,old_timestamp,bs.signal_id,
+											old_data, Some(old_time_lapse), dur_offset);
+					
+					if bs.compress_on_segmentation {
+						let before = data.len() as f64;
+						(bs.compress_func)(&mut seg);
+						let after = data.len() as f64;
+						compression_percentage += after/before;
+					}
+
+
+					match bs.buffer.lock() {
+						Ok(mut buf) => match buf.put(seg) {
+							Ok(()) => (),
+							Err(e) => panic!("Failed to put segment in buffer: {:?}", e),
+						},
+						Err(_)  => panic!("Failed to acquire buffer write lock"),
+					}; /* Currently panics if can't get it */
+
+				}
+
+				/* Always add the newly received data  */
+				//println!("ID {} receieved {:?}", self.signal_id, value);
+				data.push(value);
+				segments_produced += 1;
+				match cur_time.duration_since(timestamp.unwrap()) {
+					Ok(d)  => time_lapse.push(d),
+					Err(_) => time_lapse.push(Duration::default()),
+				}
+			}
+		}	
+	}
+}
 
 pub struct BufferedSignal<T,U,F,G> 
 	where T: Copy + Send,
@@ -103,7 +270,6 @@ impl<T,U,F,G> BufferedSignal<T,U,F,G>
 			kernel: kernel,
 		}
 	}
-
 }
 
 /* Currently just creates the segment and writes it to a buffer,

@@ -15,14 +15,14 @@ use crate::client::{construct_normal_gen_client, read_dict};
 use crate::client::construct_gen_client;
 use std::time::SystemTime;
 use crate::client::construct_file_client;
-use crate::segment::{ FourierCompress, PAACompress};
+use crate::segment::{Segment, FourierCompress, PAACompress};
 use rocksdb::{DB};
 use std::str::FromStr;
 use serde::Serialize;
 use std::fmt::Debug;
 use serde::de::DeserializeOwned;
 use crate::buffer_pool::{SegmentBuffer,ClockBuffer,NoFmClockBuffer};
-use crate::future_signal::{BufferedSignal};
+use crate::future_signal::{BufferedSignal,BufferedSignalReduced,run_buffered_signal};
 use std::path::Path;
 use toml_loader::{Loader};
 use toml::Value;
@@ -62,9 +62,11 @@ mod compression_demon;
 mod dispatcher;
 mod tcp_endpoint;
 mod mapping_server;
+mod stream_wrap;
 
 use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
 use tcp_endpoint::TcpEndpoint;
+use stream_wrap::{StreamWrap,UdpEndpoint};
 use mapping_server::MappingServer;
 use std::collections::{HashMap,HashSet};
 use fnv::{FnvHashMap, FnvBuildHasher};
@@ -523,7 +525,8 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	let (buf_option, compre_buf_option): (Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>, Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>) = load_buffer(&config, fm, fm_comp);
 
 	/* Client loading */
-	let mut signals: Vec<Box<(dyn Future<Output=Option<SystemTime>> + Send + Sync + Unpin)>> = Vec::new();
+	//let mut signals: Vec<Box<(dyn Future<Output=Option<SystemTime>> + Send + Sync + Unpin)>> = Vec::new();
+	let mut signals: Vec<Box<BufferedSignalReduced<T,Stream<Item=T>,Fn(usize,usize) -> bool,Fn(&mut Segment<T>)>>> = Vec::new();
 	let mut mapping =  FnvHashMap::default();
 	let cx = Arc::new(zmq::Context::new());
 	match load_clients(&config, &mut signals, &mut mapping, &buf_option, cx.clone()) {
@@ -637,10 +640,13 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 	/* Wait for the future signals to finish. */
 	let mut joins = Vec::new();
-	for sig in signals {
+	/* for sig in signals {
 		joins.push(rt.spawn(async move {
 			sig.await
 		}));
+	} */
+	for sig in signals {
+		joins.push(rt.spawn(run_buffered_signal(sig)));
 	}
 
 	let curr_time = Instant::now();
@@ -899,12 +905,15 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
  * Returns the testdict; the signals and the dispatchers have their reference editted
  */
 fn load_clients<T>(config: &Value,
-	signals: &mut Vec<Box<(dyn Future<Output=Option<SystemTime>> + Send + Sync + Unpin)>>,
+	signals: &mut Vec<Box<BufferedSignalReduced<T,U,F,G>>>,
 	mapping: &mut HashMap<u64, u16, FnvBuildHasher>,
 	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,
 	cx: Arc<zmq::Context>)
 	-> Option<Array2<T>>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32> + Unpin,
+		U: Stream<Item=T> + Unpin,
+		F: Fn(usize,usize) -> bool + Unpin,
+		G: Fn(&mut Segment<T>) + Unpin
 {
 	/* Get segment size */
 	let seg_size = config
@@ -975,7 +984,7 @@ fn load_clients<T>(config: &Value,
 				};
 
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignal::new(signal_id, client, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false,dict))),
+					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(signal_id, client, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false,dict))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}
@@ -1024,7 +1033,7 @@ fn load_clients<T>(config: &Value,
 						x => panic!("The provided generator type, {:?}, is not currently supported", x),
 					};
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignal::new(signal_id, client, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(signal_id, client, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}
@@ -1052,10 +1061,12 @@ fn load_clients<T>(config: &Value,
 				};
 				
 				mapping.insert(remote_signal_id, port);
-				let mut tcp_endpoint = TcpEndpoint::<T>::new(port, buffer, cx.clone());
+				//let mut tcp_endpoint = TcpEndpoint::<T>::new(port, buffer, cx.clone());
+				let mut udp_endpoint = UdpEndpoint::<T>::new(port, buffer);
+
 				
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignal::new(remote_signal_id, tcp_endpoint, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(remote_signal_id, udp_endpoint, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}
