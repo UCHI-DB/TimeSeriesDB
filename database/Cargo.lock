@@ -94,6 +94,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-trait"
+version = "0.1.41"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b246867b8b3b6ae56035f1eb1ed557c1d8eae97f0d53696138a50fa0e3a3b8c0"
+dependencies = [
+ "proc-macro2 1.0.24",
+ "quote 1.0.3",
+ "syn 1.0.48",
+]
+
+[[package]]
 name = "atty"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2621,6 +2632,7 @@ dependencies = [
 name = "time_series_start"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bincode",
  "bitpacking",
  "compression",
@@ -2639,6 +2651,7 @@ dependencies = [
  "ndarray",
  "ndarray-linalg",
  "num",
+ "packed_simd",
  "parity-snappy",
  "parquet",
  "queues",
@@ -2685,6 +2698,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "mio 0.7.4",
+ "num_cpus",
  "pin-project-lite",
  "slab",
  "tokio-macros",

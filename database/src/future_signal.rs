@@ -27,7 +27,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll}; // Added in updating tokio
 use std::ops::{Deref, DerefMut};
 
-use stream_wrap::StreamWrap;
+use crate::stream_wrap::StreamWrap;
 
 pub type SignalId = u64;
 const DEFAULT_BATCH_SIZE: usize = 50;
@@ -35,37 +35,31 @@ const DEFAULT_BATCH_SIZE: usize = 50;
 /*
 TODO
 Updated to most recent version of Tokio/Future.
-Needs revision regarding Unpin requirements & self.get_mut()
+Needs revision regarding Unpin requirements
 */
 
-pub struct BufferedSignalReduced<T,U,F,G> 
+pub struct BufferedSignalReduced<T> 
 	where T: Copy + Send,
-	      U: Stream<Item=T>,	
-	      F: Fn(usize,usize) -> bool,
-	      G: Fn(&mut Segment<T>)
 {
 	seg_size: usize,
 	signal_id: SignalId,
-	signal: U, // Relies on structural pinning
+	signal: Box<StreamWrap<T> + Send>, // Relies on structural pinning
 	buffer: Arc<Mutex<dyn SegmentBuffer<T> + Send + Sync>>,
-	split_decider: F,
-	compress_func: G,
+	split_decider: Box<Fn(usize,usize) -> bool + Send>,
+	compress_func: Box<Fn(&mut Segment<T>) + Send>,
 	compress_on_segmentation: bool,
 	kernel: Option<Kernel<T>>
 }
 
-impl<T,U,F,G> BufferedSignalReduced<T,U,F,G> 
+impl<T> BufferedSignalReduced<T> 
 	where T: Copy + Send+ FFTnum + Float + Lapack,
-		  U: Stream<Item=T>,
-		  F: Fn(usize,usize) -> bool,
-		  G: Fn(&mut Segment<T>)
 {
 
-	pub fn new(signal_id: u64, signal: U, seg_size: usize, 
+	pub fn new(signal_id: u64, signal: Box<StreamWrap<T> + Send>, seg_size: usize, 
 		buffer: Arc<Mutex<dyn SegmentBuffer<T> + Send + Sync>>,
-		split_decider: F, compress_func: G, 
+		split_decider: Box<Fn(usize,usize) -> bool + Send>, compress_func: Box<Fn(&mut Segment<T>) + Send>, 
 		compress_on_segmentation: bool, dict: Option<Array2<T>>)
-		-> BufferedSignalReduced<T,U,F,G> 
+		-> BufferedSignalReduced<T> 
 	{
 		let mut kernel:Option<Kernel<T>>= match dict {
 			// The division was valid
@@ -91,19 +85,15 @@ impl<T,U,F,G> BufferedSignalReduced<T,U,F,G>
 	}
 }
 
-
-async fn run_buffered_signal<T,U,F,G>(mut bs: BufferedSignalReduced<T,U,F,G>)
+pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 		-> Option<SystemTime>
-	where T: Copy + Send + Unpin,
-		U: StreamWrap<T> + Unpin,	
-		F: Fn(usize,usize) -> bool + Unpin,
-		G: Fn(&mut Segment<T>) + Unpin
+	where T: Copy + Send + Float + FFTnum + Lapack + Unpin,
 {
 	// Interal variables to manage state
 	let mut timestamp: Option<SystemTime> = None;
 	let mut prev_seg_offset: Option<SystemTime> = None;
-	let mut data: Vec<T> = Vec::with_capacity(seg_size);
-	let mut time_lapse: Vec<Duration> = Vec::with_capacity(seg_size);
+	let mut data: Vec<T> = Vec::with_capacity(bs.seg_size);
+	let mut time_lapse: Vec<Duration> = Vec::with_capacity(bs.seg_size);
 	let mut compression_percentage: f64 = 0.0;
 	let mut segments_produced: u32 = 0;
 
@@ -194,7 +184,7 @@ async fn run_buffered_signal<T,U,F,G>(mut bs: BufferedSignalReduced<T,U,F,G>)
 				//println!("ID {} receieved {:?}", self.signal_id, value);
 				data.push(value);
 				segments_produced += 1;
-				match cur_time.duration_since(timestamp.unwrap()) {
+				match cur_time.duration_since(timestamp) {
 					Ok(d)  => time_lapse.push(d),
 					Err(_) => time_lapse.push(Duration::default()),
 				}

@@ -416,9 +416,8 @@ pub fn run_test<T: 'static>(config_file: &str)
 
 	/* Construct the runtime */
 	let mut rt = match config.lookup("runtime") {
-		None => Builder::new()
+		None => Builder::new_multi_thread()
 					.on_thread_start(|| println!("Threads have been constructed"))
-					.threaded_scheduler()
 					.build()
 					.expect("Failed to produce a default runtime"),
 
@@ -433,11 +432,10 @@ pub fn run_test<T: 'static>(config_file: &str)
 										.as_integer()
 										.expect("Blocking threads should be provided as an integer") as usize;
 
-			Builder::new()
-					.core_threads(core_threads)
+			Builder::new_multi_thread()
+					.worker_threads(core_threads)
 					.max_threads(blocking_threads) // TODO previously blocking_threads: does it have the same functionality?
 					.on_thread_start(|| println!("Threads have been constructed"))
-					.threaded_scheduler()
 					.build()
 					.expect("Failed to produce the custom runtime")
 		}
@@ -526,7 +524,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 	/* Client loading */
 	//let mut signals: Vec<Box<(dyn Future<Output=Option<SystemTime>> + Send + Sync + Unpin)>> = Vec::new();
-	let mut signals: Vec<Box<BufferedSignalReduced<T,Stream<Item=T>,Fn(usize,usize) -> bool,Fn(&mut Segment<T>)>>> = Vec::new();
+	let mut signals: Vec<Box<BufferedSignalReduced<T>>> = Vec::new();
 	let mut mapping =  FnvHashMap::default();
 	let cx = Arc::new(zmq::Context::new());
 	match load_clients(&config, &mut signals, &mut mapping, &buf_option, cx.clone()) {
@@ -591,28 +589,28 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 	/* Construct the runtime */
 	let mut rt = match config.get("runtime") {
-		None => Builder::new()
+		None => Builder::new_multi_thread()
+			.enable_all()
 			.on_thread_start(|| println!("Threads have been constructed"))
-			.threaded_scheduler()
 			.build()
 			.expect("Failed to produce a default runtime"),
 
 		Some(value) => {
-			let core_threads = value.get("core_threads")
+			let worker_threads = value.get("core_threads")
 				.expect("Core threads field required by custom runtime")
 				.as_integer()
 				.expect("Core threads should be provided as an integer") as usize;
 
-			let blocking_threads = value.get("blocking_threads")
+			let max_threads = value.get("blocking_threads")
 				.expect("Blocking threads field required by custom runtime")
 				.as_integer()
 				.expect("Blocking threads should be provided as an integer") as usize;
 			
-			Builder::new()
-				.core_threads(core_threads)
-				.max_threads(blocking_threads) // TODO previously blocking_threads: does it have the same functionality?
+			Builder::new_multi_thread()
+				.worker_threads(worker_threads)
+				.max_threads(max_threads) // TODO previously blocking_threads: does it have the same functionality?
+				.enable_all()
 				.on_thread_start(|| println!("Threads have been constructed"))
-				.threaded_scheduler()
 				.build()
 				.expect("Failed to produce the custom runtime")
 		}
@@ -646,7 +644,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		}));
 	} */
 	for sig in signals {
-		joins.push(rt.spawn(run_buffered_signal(sig)));
+		joins.push(rt.spawn(run_buffered_signal(*sig)));
 	}
 
 	let curr_time = Instant::now();
@@ -905,15 +903,12 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
  * Returns the testdict; the signals and the dispatchers have their reference editted
  */
 fn load_clients<T>(config: &Value,
-	signals: &mut Vec<Box<BufferedSignalReduced<T,U,F,G>>>,
+	signals: &mut Vec<Box<BufferedSignalReduced<T>>>,
 	mapping: &mut HashMap<u64, u16, FnvBuildHasher>,
 	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,
 	cx: Arc<zmq::Context>)
 	-> Option<Array2<T>>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32> + Unpin,
-		U: Stream<Item=T> + Unpin,
-		F: Fn(usize,usize) -> bool + Unpin,
-		G: Fn(&mut Segment<T>) + Unpin
 {
 	/* Get segment size */
 	let seg_size = config
@@ -934,6 +929,10 @@ fn load_clients<T>(config: &Value,
 		// Common configuration
 		let cc = load_common_client_configs(&client_config, &mut rng);
 		let (signal_id, amount, run_period, frequency) = (cc.signal_id, cc.amount, cc.run_period, cc.frequency);
+		
+		// Since we use the same functions for split decider/compres func (for now), allocate now and use the same thing
+		let split_decider = Box::new(|i,j| i >= j);
+		let compress_func: Box<Fn(&mut Segment<T>) + Send> = Box::new(|_| ());
 
 		// Per client type configuration
 		let client_type = client_config.get("type").expect("The client type must be provided");
@@ -970,7 +969,7 @@ fn load_clients<T>(config: &Value,
 
 				testdict = dict.clone();
 
-				let client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match reader_type {
+				let client: Box<(StreamWrap<T> + Sync + Send + Unpin)> = match reader_type {
 					"NewlineAndSkip" => {
 
 						let skip_val = match params.get("skip") {
@@ -984,7 +983,7 @@ fn load_clients<T>(config: &Value,
 				};
 
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(signal_id, client, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false,dict))),
+					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(signal_id, client, seg_size, *buf.clone(), split_decider, compress_func, false,dict))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}
@@ -997,7 +996,7 @@ fn load_clients<T>(config: &Value,
 					}
 				}
 				let params = client_config.get("params").expect("The generator client type requires a params table");
-				let client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match client_config.get("gen_type")
+				let client: Box<(dyn StreamWrap<T> + Sync + Send + Unpin)> = match client_config.get("gen_type")
 					.expect("The gen client must be provided a gen type field")
 					.as_str()
 					.expect("The gen type must be provided as a string")
@@ -1033,7 +1032,7 @@ fn load_clients<T>(config: &Value,
 						x => panic!("The provided generator type, {:?}, is not currently supported", x),
 					};
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(signal_id, client, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(signal_id, client, seg_size, *buf.clone(), split_decider, compress_func, false, None))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}
@@ -1062,11 +1061,11 @@ fn load_clients<T>(config: &Value,
 				
 				mapping.insert(remote_signal_id, port);
 				//let mut tcp_endpoint = TcpEndpoint::<T>::new(port, buffer, cx.clone());
-				let mut udp_endpoint = UdpEndpoint::<T>::new(port, buffer);
+				let mut udp_endpoint = Box::new(UdpEndpoint::<T>::new(port, buffer));
 
 				
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(remote_signal_id, udp_endpoint, seg_size, *buf.clone(), |i,j| i >= j, |_| (), false, None))),
+					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(remote_signal_id, udp_endpoint, seg_size, *buf.clone(), split_decider, compress_func, false, None))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}

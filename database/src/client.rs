@@ -17,7 +17,6 @@ use crate::buffer_pool::ClockBuffer;
 use std::sync::Arc;
 
 use tokio::time::Interval;
-use tokio::prelude::*;
 use tokio::stream::{Stream, iter};
 use std::pin::Pin;
 use std::task::{Context, Poll}; // Added in updating tokio
