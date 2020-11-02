@@ -1,23 +1,22 @@
-protocol = "tcp"
 address = "localhost"
 port = 5555
 
-[clients.client0]
+[signals.signal0]
     	id = 10
     	type = "gen"
         amount = 50000000
     	gen_type = "normal"
 
-    		[clients.client0.params]
+    		[signals.signal0.params]
     		mean = 0.0 # Sets the mean
     		std = 1.0 # Sets the standard deviation
 
-[clients.client1]
+[signals.signal1]
     	id = 11
     	type = "gen"
         amount = 50000000
     	gen_type = "normal"
 
-    		[clients.client1.params]
+    		[signals.signal1.params]
     		mean = 50.0 # Sets the mean
     		std = 10.0 # Sets the standard deviation

@@ -13,16 +13,16 @@ use bincode::{deserialize, serialize};
 
 // tokio
 use tokio::runtime::{Runtime, Builder};
+use tokio::task::JoinHandle;
 use tokio::stream::{Stream, StreamExt};
-use futures::prelude::Future;
 use futures::future::join_all;
 use core::pin::Pin;
 use tokio::time;
 
-// Tokio TCP Connection
+// Network
 use zmq::{Message, Socket};
-use std::io;
-use std::net::Shutdown;
+use tokio::net::UdpSocket;
+use std::net::SocketAddr;
 
 // Hash Map
 use std::collections::HashMap;
@@ -44,6 +44,7 @@ use client::{Amount, Frequency, construct_file_client, construct_file_client_ski
 use client::{construct_gen_client, construct_normal_gen_client};
 
 const DEFAULT_DELIM: char = '\n';
+const DEFAULT_THREAD_NUM: usize = 8;
 
 /* Dummy Client to receive mapping and send to corresponding ports
  * Argument 1: config file to use (config file syntax is similar to that of client config for the main DB)
@@ -57,25 +58,26 @@ const DEFAULT_DELIM: char = '\n';
  */ 
 pub fn run_client(config_file: &str, send_size: usize)
 {
-    
+    // First load settings
 	let config = load_config(config_file);
-	let mut rt = Builder::new()
-		.threaded_scheduler()
-		.core_threads(8)
+
+	// Try building Tokio runtime
+	let rt = Builder::new_multi_thread()
+		.worker_threads(config.thread_num)
+		.enable_all()
 		.build().expect("tokio runtime failure");
 	
 	// Receive initial mapping
-	let context = zmq::Context::new();
-	let (format_type, mapping) = recv_mapping(&context, &config);
+	let (format_type, mapping) = recv_mapping(&config);
 	println!("Connected: type {}, mapping {:?}", format_type, mapping);
 	
 	// Run with appropriate data type
     match format_type.as_str() {
 		"f32" => {
-			begin_async::<f32>(context, &config, &mapping, send_size, rt);
+			begin_async::<f32>(&config, &mapping, send_size, rt);
 		}
 		"f64" => {
-			begin_async::<f64>(context, &config, &mapping, send_size, rt);
+			begin_async::<f64>(&config, &mapping, send_size, rt);
 		}
 		x => {
 			println!("Received unsupported format: {}", x);
@@ -89,12 +91,19 @@ pub fn run_client(config_file: &str, send_size: usize)
  * 
  * TODO arbitrary buffer size
  */
-fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
-    let requester = context.socket(zmq::DEALER).unwrap();
-	requester.set_identity(&config.id).unwrap();
+fn recv_mapping(config: &Config) -> (String, HashMap<u64, u16, FnvBuildHasher>) {
+	let context = zmq::Context::new();
+	let requester = context.socket(zmq::DEALER).unwrap();
+	
+	let mut id: [u8; 5] = [0; 5];
+	for i in 0..5 {
+		id[i] = random::<u8>();
+	}
+	requester.set_identity(&id).unwrap();
+
 	let five_sec = Duration::from_secs(5);
     loop {
-        match requester.connect(format!("{}://{}:{}", config.protocol, config.address, config.port).as_str()) {
+        match requester.connect(format!("{}://{}:{}", "tcp", config.address, config.port).as_str()) {
             Ok(_) => { break; }
             Err(_) => { sleep(five_sec);}
         }
@@ -123,82 +132,74 @@ fn recv_mapping(context: &zmq::Context, config: &Config) -> (String, HashMap<u64
 }
 
 /*
- * Begins the async clients using the Tokio runtime
+ * Begins the async signals using the Tokio runtime
  * 
  */
-fn begin_async<T: 'static>(context: zmq::Context, config: &Config, mapping: &HashMap<u64, u16, FnvBuildHasher>, send_size: usize, mut rt: Runtime)
+fn begin_async<T: 'static>(config: &Config, mapping: &HashMap<u64, u16, FnvBuildHasher>, send_size: usize, rt: Runtime)
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
-	// This has to be read here as reading client depends on type received from server
-	let clients = load_clients(&*config.config);
-	let context_rc = Arc::new(context);
-	let mut joins = Vec::new();
-	for (id, client) in clients {
-		match mapping.get(&id) {
-			Some(port) => {
-				joins.push(rt.spawn(client_async::<T>(context_rc.clone(), client, config.protocol.clone(), config.address.clone(), config.id, *port, send_size)));
-			}
-			None => {
-				println!("No port found!");
+	// This has to be read here as reading signal depends on type received from server
+	let signals = load_signals(&*config.config);
+	let addr = config.address.clone();
+	rt.block_on(async move {
+		// Create UdpSocket in async setting; port 0 makes OS automatically allocate available port
+		let sock = UdpSocket::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+		let arc_sock = Arc::new(sock);
+		let mut signal_joins: Vec<JoinHandle<()>> = Vec::new();
+		// Create asynchronous task for each signal
+		for (id, signal) in signals {
+			match mapping.get(&id) {
+				Some(port) => {
+					signal_joins.push(tokio::spawn(send_signal_async::<T>(arc_sock.clone(), signal, addr.clone(), *port, send_size)));
+				}
+				None => {
+					println!("No port found!");
+				}
 			}
 		}
-	}
-
-	// TODO join with joins (JoinHandle)
-	rt.block_on(join_all(joins));
+		
+		join_all(signal_joins).await;
+	});
 }
 
-/*
- * Represents the process of each client; connects to appropriate port, receives data from stream, then serializes and sends
- * 
- */
-async fn client_async<T>(context: Arc<zmq::Context>, mut client: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
-	protocol: String, address: String, id: [u8; 5], port: u16, send_size: usize)
+
+async fn send_signal_async<T>(socket: Arc<UdpSocket>, mut signal: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
+	address: String, port: u16, send_size: usize)
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
-	// Establish connection
-	let requester = context.socket(zmq::DEALER).unwrap();
-	requester.set_identity(&id).unwrap();
-
-	let five_sec = Duration::from_secs(5);
-    loop {
-        match requester.connect(format!("{}://{}:{}", protocol, address, port).as_str()) {
-            Ok(_) => { break; }
-            Err(_) => { sleep(five_sec);}
-        }
-	}
-
+	let signal_addr = format!("{}:{}", address, port).as_str().parse::<SocketAddr>().unwrap();
+	let finish_msg = b"F";
 	loop {
 		let mut data: Vec<T> = Vec::new();
+		// Aggregate data from signal into batches of send_size
 		for _i in 0..send_size {
-			match client.next().await {
+			match signal.next().await {
 				Some(value) => { 
 					data.push(value);
 				}
 				None => { 
-					// Send whatever is left and disconnect
+					// Signal stream over; send whatever is left in buffer
 					let serialized = serialize(&data).unwrap();
-					requester.send(&serialized, 0).unwrap();
-					requester.send(Message::from("F"), 0).unwrap(); // Indicates finished
+					socket.send_to(&serialized, &signal_addr).await.unwrap();
+					socket.send_to(&finish_msg[..], &signal_addr).await.unwrap(); // Indicates finished
 					println!("Finished");
 					return;
 				}
 			}
 		}
 		let serialized = serialize(&data).unwrap();
-		//println!("Sending {:?}", data);
-		requester.send(&serialized, 0).unwrap();
+		socket.send_to(&serialized, &signal_addr).await.unwrap();
 	}
 }
 
 /* Config Loading */
 
+// Struct for encapsulating config data
 pub struct Config
 {
-	protocol: String,
+	thread_num: usize,
     address: String,
-	port: u16,
-	id: [u8; 5],
+	port: u16, // Port to receive mapping info from
     config :Box<Value>
 }
 
@@ -212,6 +213,8 @@ pub fn load_config(config_file: &str) -> Config
     };
 	let config = raw_string.parse::<Value>().unwrap();
 	
+	/*
+	Using UDP; no longer need to load protocol
 	let protocol = match config.get("protocol") {
         Some(value) => {
             match value.as_str().expect("Protocol must be provided as a string") {
@@ -220,7 +223,19 @@ pub fn load_config(config_file: &str) -> Config
             }
         }
         None => "tcp"
-    };
+	};
+	*/
+
+	let thread_num: usize = match config.get("thread") {
+        Some(value) => {
+            let tmp = value.as_integer().expect("Thread number must be specified as an integer") as usize;
+            if tmp <= 0 {
+                panic!("Port number must be greater than 0");
+            }
+            tmp
+        }
+        None => DEFAULT_THREAD_NUM
+	};
 
     let addr = config.get("address")
                         .expect("Address must be provided")
@@ -237,62 +252,40 @@ pub fn load_config(config_file: &str) -> Config
         }
         None => panic!("Port number must be specified"),
 	};
-	
-	// This is the identity for ZMQ
-    let id = match config.get("id") {
-        Some(value) => {
-            let arr = value.as_array().expect("The ID must be specified as an array of 5 integers");
-            if arr.len() != 5 { panic!("The ID must be specified as an array of length 5") }
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = arr[i].as_integer().expect("Each element in the ID array must be an integer") as u8;
-            }
-            idarr
-        }
-        None => {
-            // Random ID
-            let mut idarr: [u8; 5] = [0; 5];
-            for i in 0..5 {
-                idarr[i] = random::<u8>();
-            }
-            idarr
-        },
-    };
 
     Config {
-		protocol: String::from(protocol),
+		thread_num: thread_num,
         address: String::from(addr),
 		port: port,
-		id: id.clone(),
 		config: Box::new(config)
     }
     
 }
 
 
-struct ClientCommonConfig {
+struct SignalCommonConfig {
 	signal_id: u64,
 	amount: Amount,
 	frequency: Frequency
 }
 
-/* Loads client configuration common for all client types */
-fn load_common_client_configs(client_config: &Value) -> ClientCommonConfig {
+/* Loads signal configuration common for all signal types */
+fn load_common_signal_configs(signal_config: &Value) -> SignalCommonConfig {
 	// This is the signal ID that the DB will store the data in
-	let signal_id = client_config.get("id")
+	let signal_id = signal_config.get("id")
 		.expect("The signal ID must be provided")
 		.as_integer()
 		.expect("The signal ID must be provided as an integer") as u64;
 
-	let amount = match client_config.get("amount") {
-		Some(value) => Amount::Limited (value.as_integer().expect("The client amount argument must be specified as an integer") as u64),
+	let amount = match signal_config.get("amount") {
+		Some(value) => Amount::Limited (value.as_integer().expect("The signal amount argument must be specified as an integer") as u64),
 		None => Amount::Unlimited,
 	};
 	
-	// Variables to pass to ZMQ Dispatcher/Client creations (as tokio::Interval doesn't implement Clone)
+	// Variables to pass to ZMQ Dispatcher/signal creations (as tokio::Interval doesn't implement Clone)
 	/* let mut freq_start: Option<Instant> = None;
 	let mut freq_interval: Option<Duration> = None; */
-	let frequency = match client_config.get("interval") {
+	let frequency = match signal_config.get("interval") {
 		Some(table) => {
 			let secs = match table.get("sec") {
 				Some(sec_value) => sec_value.as_integer().expect("The sec argument in run period must be provided as an integer") as u64,
@@ -328,7 +321,7 @@ fn load_common_client_configs(client_config: &Value) -> ClientCommonConfig {
 		None => Frequency::Immediate,
 	};
 
-	ClientCommonConfig {
+	SignalCommonConfig {
 		signal_id: signal_id,
 		amount: amount,
 		frequency: frequency
@@ -337,39 +330,39 @@ fn load_common_client_configs(client_config: &Value) -> ClientCommonConfig {
 
 
 /*
- * Loads clients from the given config toml::Value
+ * Loads signals from the given config toml::Value
  * Returns the testdict; the signals and the dispatchers have their reference editted
  */
-fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>)>
+fn load_signals<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>)>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FromStr + From<f32> + Unpin,
 {	
-	let mut clients: Vec<(u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>)> = Vec::new();
-	/* Construct the clients */
-	for client_config in config.get("clients")
-		.expect("At least one client must be provided")
+	let mut signals: Vec<(u64, Box<dyn Stream<Item=T> + Sync + Send + Unpin>)> = Vec::new();
+	/* Construct the signals */
+	for signal_config in config.get("signals")
+		.expect("At least one signal must be provided")
 		.as_table()
-		.expect("The clients must be provided as a TOML table")
+		.expect("The signals must be provided as a TOML table")
 		.values()
 	{
 		// Common configuration
-		let cc = load_common_client_configs(&client_config);
+		let cc = load_common_signal_configs(&signal_config);
 		let (signal_id, amount, frequency) = (cc.signal_id, cc.amount, cc.frequency);
 
-		// Per client type configuration
-		let client_type = client_config.get("type").expect("The client type must be provided");
-		match client_type.as_str().expect("The client type must be provided as a string") {
+		// Per signal type configuration
+		let signal_type = signal_config.get("type").expect("The signal type must be provided");
+		match signal_type.as_str().expect("The signal type must be provided as a string") {
 			"file" => {
-				let params = client_config.get("params").expect("The file client must provide a params table");
+				let params = signal_config.get("params").expect("The file signal must provide a params table");
 				let reader_type =  params.get("reader_type")
-					.expect("A file client must provide a reader types in the params table")
+					.expect("A file signal must provide a reader types in the params table")
 					.as_str()
 					.expect("The reader type must be provided as a string");
 
 				let path = params
 					.get("path")
-					.expect("The file client parameters must provide a file path argument")
+					.expect("The file signal parameters must provide a file path argument")
 					.as_str()
-					.expect("The file path for the client must be provided as a string");
+					.expect("The file path for the signal must be provided as a string");
 
 				let delim = match params.get("delim") {
 					Some(value) => value.as_str()
@@ -378,7 +371,7 @@ fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> 
 					None => DEFAULT_DELIM,
 				};
 
-				let this_client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match reader_type {
+				let this_signal: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match reader_type {
 					"NewlineAndSkip" => {
 
 						let skip_val = match params.get("skip") {
@@ -390,19 +383,19 @@ fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> 
 					"DeserializeDelim" => Box::new(construct_file_client::<T>(path, delim as u8, amount, frequency).expect("Client could not be properly produced")),
 					x => panic!("The specified file reader, {:?}, is not supported yet", x),
 				};
-				clients.push((signal_id, this_client));
+				signals.push((signal_id, this_signal));
 			}
 			"gen" => {
 				if amount == Amount::Unlimited {
-					if !client_config.get("never_die").map_or(false,|v| v.as_bool().expect("The never_die field must be provided as a boolean")) {
-						panic!("Provided a generator client that does have an amount or time bound\n
-							This client would run indefintely and the program would not terminate\n
-							If this is what you want, then create the never_die field under this client and set the value to true");
+					if !signal_config.get("never_die").map_or(false,|v| v.as_bool().expect("The never_die field must be provided as a boolean")) {
+						panic!("Provided a generator signal that does have an amount or time bound\n
+							This signal would run indefintely and the program would not terminate\n
+							If this is what you want, then create the never_die field under this signal and set the value to true");
 					}
 				}
-				let params = client_config.get("params").expect("The generator client type requires a params table");
-				let this_client: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match client_config.get("gen_type")
-					.expect("The gen client must be provided a gen type field")
+				let params = signal_config.get("params").expect("The generator signal type requires a params table");
+				let this_signal: Box<(dyn Stream<Item=T> + Sync + Send + Unpin)> = match signal_config.get("gen_type")
+					.expect("The gen signal must be provided a gen type field")
 					.as_str()
 					.expect("The gen type must be provided as a string")
 				{
@@ -436,10 +429,10 @@ fn load_clients<T: 'static>(config: &Value) -> Vec<(u64, Box<dyn Stream<Item=T> 
 					}
 					x => panic!("The provided generator type, {:?}, is not currently supported", x),
 				};
-				clients.push((signal_id, this_client));
+				signals.push((signal_id, this_signal));
 			}
 			x => panic!("The provided type, {:?}, is not currently supported", x),
 		}
 	}
-	clients
+	signals
 }

@@ -11,7 +11,7 @@ use tsz::StdEncoder;
 use rustfft::num_traits::real::Real;
 use log::info;
 use std::collections::HashMap;
-use packed_simd::{u8x8,u8x16,u8x32};
+// use packed_simd::{u8x8,u8x16,u8x32};
 use crate::client::construct_file_iterator_skip_newline;
 use itertools::Itertools;
 use nalgebra::max;
@@ -2603,7 +2603,7 @@ impl SplitBDDoubleCompress {
         println!("Max value:{}", max_f);
     }
 
-    pub(crate) fn simd_range_filter(&self, bytes: Vec<u8>,pred:f64) {
+    /* pub(crate) fn simd_range_filter(&self, bytes: Vec<u8>,pred:f64) {
         let prec = (self.scale as f32).log10() as i32;
         let prec_delta = get_precision_bound(prec);
         let mut bitpack = BitPack::<&[u8]>::new(bytes.as_slice());
@@ -2700,7 +2700,7 @@ impl SplitBDDoubleCompress {
         let duration = start.elapsed();
         println!("Time elapsed in splitBD simd filtering fraction part is: {:?}", duration);
         println!("Number of qualified items:{}", res.cardinality());
-    }
+    } */
 }
 
 impl<'a, T> CompressionMethod<T> for SplitBDDoubleCompress
