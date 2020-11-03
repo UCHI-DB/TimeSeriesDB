@@ -21,7 +21,8 @@ use tokio::time;
 
 // Network
 use zmq::{Message, Socket};
-use tokio::net::UdpSocket;
+use tokio::net::{TcpStream,UdpSocket};
+use tokio::io::AsyncWriteExt;
 use std::net::SocketAddr;
 
 // Hash Map
@@ -141,29 +142,53 @@ fn begin_async<T: 'static>(config: &Config, mapping: &HashMap<u64, u16, FnvBuild
 	// This has to be read here as reading signal depends on type received from server
 	let signals = load_signals(&*config.config);
 	let addr = config.address.clone();
-	rt.block_on(async move {
-		// Create UdpSocket in async setting; port 0 makes OS automatically allocate available port
-		let sock = UdpSocket::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).await.unwrap();
-		let arc_sock = Arc::new(sock);
-		let mut signal_joins: Vec<JoinHandle<()>> = Vec::new();
-		// Create asynchronous task for each signal
-		for (id, signal) in signals {
-			match mapping.get(&id) {
-				Some(port) => {
-					signal_joins.push(tokio::spawn(send_signal_async::<T>(arc_sock.clone(), signal, addr.clone(), *port, send_size)));
+	match config.protocol.as_str() {
+		"tcp" => {
+			rt.block_on(async move {
+				let mut signal_joins: Vec<JoinHandle<()>> = Vec::new();
+				// Create asynchronous task for each signal
+				for (id, signal) in signals {
+					match mapping.get(&id) {
+						Some(port) => {
+							signal_joins.push(tokio::spawn(send_signal_tcp_async::<T>(signal, addr.clone(), *port, send_size)));
+						}
+						None => {
+							println!("No port found!");
+						}
+					}
 				}
-				None => {
-					println!("No port found!");
-				}
-			}
+				
+				join_all(signal_joins).await;
+			});
 		}
-		
-		join_all(signal_joins).await;
-	});
+		"udp" => {
+			rt.block_on(async move {
+				// Create UdpSocket in async setting; port 0 makes OS automatically allocate available port
+				let sock = UdpSocket::bind("0.0.0.0:0".parse::<SocketAddr>().unwrap()).await.unwrap();
+				let arc_sock = Arc::new(sock);
+				let mut signal_joins: Vec<JoinHandle<()>> = Vec::new();
+				// Create asynchronous task for each signal
+				for (id, signal) in signals {
+					match mapping.get(&id) {
+						Some(port) => {
+							signal_joins.push(tokio::spawn(send_signal_udp_async::<T>(arc_sock.clone(), signal, addr.clone(), *port, send_size)));
+						}
+						None => {
+							println!("No port found!");
+						}
+					}
+				}
+				
+				join_all(signal_joins).await;
+			});
+		}
+		_ => panic!("Unsupported protocol")
+	}
+	
 }
 
 
-async fn send_signal_async<T>(socket: Arc<UdpSocket>, mut signal: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
+async fn send_signal_udp_async<T>(socket: Arc<UdpSocket>, mut signal: Box<dyn Stream<Item=T> + Sync + Send + Unpin>,
 	address: String, port: u16, send_size: usize)
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
 {
@@ -192,12 +217,52 @@ async fn send_signal_async<T>(socket: Arc<UdpSocket>, mut signal: Box<dyn Stream
 	}
 }
 
+async fn send_signal_tcp_async<T>(mut signal: Box<dyn Stream<Item=T> + Sync + Send + Unpin>, address: String, port: u16, send_size: usize)
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + FromStr + From<f32> + Debug + Unpin
+{
+	let signal_addr = format!("{}:{}", address, port).as_str().parse::<SocketAddr>().unwrap();
+	let mut stream;
+	match TcpStream::connect(signal_addr).await {
+		Ok(s) => {
+			stream = s;
+			println!("Connected at {}!", port);
+		}
+		Err(e) => {
+			println!("Failed to connect - {:?}", e);
+			return;
+		}
+	};
+	let finish_msg = b"F";
+	loop {
+		let mut data: Vec<T> = Vec::new();
+		// Aggregate data from signal into batches of send_size
+		for _i in 0..send_size {
+			match signal.next().await {
+				Some(value) => { 
+					data.push(value);
+				}
+				None => { 
+					// Signal stream over; send whatever is left in buffer
+					let serialized = serialize(&data).unwrap();
+					stream.write(&serialized).await.unwrap();
+					stream.write(&finish_msg[..]).await.unwrap(); // Indicates finished
+					println!("Finished");
+					return;
+				}
+			}
+		}
+		let serialized = serialize(&data).unwrap();
+		stream.write(&serialized).await.unwrap();
+	}
+}
+
 /* Config Loading */
 
 // Struct for encapsulating config data
 pub struct Config
 {
 	thread_num: usize,
+	protocol: String,
     address: String,
 	port: u16, // Port to receive mapping info from
     config :Box<Value>
@@ -213,18 +278,16 @@ pub fn load_config(config_file: &str) -> Config
     };
 	let config = raw_string.parse::<Value>().unwrap();
 	
-	/*
-	Using UDP; no longer need to load protocol
 	let protocol = match config.get("protocol") {
         Some(value) => {
             match value.as_str().expect("Protocol must be provided as a string") {
-                "tcp" => "tcp",
+				"tcp" => "tcp",
+				"udp" => "udp",
                 _ => panic!("Unsupported protocol")
             }
         }
         None => "tcp"
-	};
-	*/
+	};	
 
 	let thread_num: usize = match config.get("thread") {
         Some(value) => {
@@ -255,6 +318,7 @@ pub fn load_config(config_file: &str) -> Config
 
     Config {
 		thread_num: thread_num,
+		protocol: protocol.to_owned(),
         address: String::from(addr),
 		port: port,
 		config: Box::new(config)

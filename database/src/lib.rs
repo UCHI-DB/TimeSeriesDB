@@ -60,13 +60,11 @@ mod lcce;
 mod kernel;
 mod compression_demon;
 mod dispatcher;
-mod tcp_endpoint;
 mod mapping_server;
 mod stream_wrap;
 
 use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
-use tcp_endpoint::TcpEndpoint;
-use stream_wrap::{StreamWrap,UdpEndpoint};
+use stream_wrap::{StreamWrap,TcpEndpoint,UdpEndpoint};
 use mapping_server::MappingServer;
 use std::collections::{HashMap,HashSet};
 use fnv::{FnvHashMap, FnvBuildHasher};
@@ -527,7 +525,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	let mut signals: Vec<Box<BufferedSignalReduced<T>>> = Vec::new();
 	let mut mapping =  FnvHashMap::default();
 	let cx = Arc::new(zmq::Context::new());
-	match load_clients(&config, &mut signals, &mut mapping, &buf_option, cx.clone()) {
+	match load_clients(&config, &mut signals, &mut mapping, &buf_option) {
 		// testdict
 		None => (),
 		d => {
@@ -905,8 +903,7 @@ fn load_common_client_configs(client_config: &Value, rng: &mut ThreadRng) -> Cli
 fn load_clients<T>(config: &Value,
 	signals: &mut Vec<Box<BufferedSignalReduced<T>>>,
 	mapping: &mut HashMap<u64, u16, FnvBuildHasher>,
-	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>,
-	cx: Arc<zmq::Context>)
+	buf_option: &Option<Box<Arc<Mutex<(dyn SegmentBuffer<T> + Send + Sync)>>>>)
 	-> Option<Array2<T>>
 	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32> + Unpin,
 {
@@ -932,7 +929,7 @@ fn load_clients<T>(config: &Value,
 		
 		// Since we use the same functions for split decider/compres func (for now), allocate now and use the same thing
 		let split_decider = Box::new(|i,j| i >= j);
-		let compress_func: Box<Fn(&mut Segment<T>) + Send> = Box::new(|_| ());
+		let compress_func: Box<dyn Fn(&mut Segment<T>) + Send> = Box::new(|_| ());
 
 		// Per client type configuration
 		let client_type = client_config.get("type").expect("The client type must be provided");
@@ -969,7 +966,7 @@ fn load_clients<T>(config: &Value,
 
 				testdict = dict.clone();
 
-				let client: Box<(StreamWrap<T> + Sync + Send + Unpin)> = match reader_type {
+				let client: Box<(dyn StreamWrap<T> + Sync + Send + Unpin)> = match reader_type {
 					"NewlineAndSkip" => {
 
 						let skip_val = match params.get("skip") {
@@ -1046,6 +1043,16 @@ fn load_clients<T>(config: &Value,
 					.expect("The port for remote client mut be specified")
 					.as_integer()
 					.expect("The port must be provided as an integer") as u16;
+				let protocol = match config.get("protocol") {
+						Some(value) => {
+							match value.as_str().expect("Protocol must be provided as a string") {
+								"tcp" => "tcp",
+								"udp" => "udp",
+								_ => panic!("Unsupported protocol")
+							}
+						}
+						None => "tcp"
+					};
 				let buffer = match client_config.get("params") {
 					Some(p) => {
 						match p.get("buffer_size") {
@@ -1060,12 +1067,15 @@ fn load_clients<T>(config: &Value,
 				};
 				
 				mapping.insert(remote_signal_id, port);
-				//let mut tcp_endpoint = TcpEndpoint::<T>::new(port, buffer, cx.clone());
-				let mut udp_endpoint = Box::new(UdpEndpoint::<T>::new(port, buffer));
+				let endpoint: Box<(dyn StreamWrap<T> + Sync + Send + Unpin)> = match protocol {
+					"tcp" => Box::new(TcpEndpoint::<T>::new(port, buffer)),
+					"udp" => Box::new(UdpEndpoint::<T>::new(port, buffer)),
+					_ => panic!("Unsupported network protocol")
+				};
 
 				
 				match &buf_option {
-					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(remote_signal_id, udp_endpoint, seg_size, *buf.clone(), split_decider, compress_func, false, None))),
+					Some(buf) => signals.push(Box::new(BufferedSignalReduced::new(remote_signal_id, endpoint, seg_size, *buf.clone(), split_decider, compress_func, false, None))),
 					None => panic!("Buffer and File manager provided not supported yet"),
 				}
 			}
