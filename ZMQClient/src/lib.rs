@@ -10,6 +10,7 @@ use std::fmt::Debug;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use bincode::{deserialize, serialize};
+use bytes::Bytes; // Needed for Framed
 
 // tokio
 use tokio::runtime::{Runtime, Builder};
@@ -23,6 +24,9 @@ use tokio::time;
 use zmq::{Message, Socket};
 use tokio::net::{TcpStream,UdpSocket};
 use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite};
+use futures::sink::SinkExt;
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use std::net::SocketAddr;
 
 // Hash Map
@@ -53,7 +57,8 @@ const DEFAULT_THREAD_NUM: usize = 8;
  */
 
 /* TODO
- * 1) Initial mapping receive buffer size
+ * 1) Implement Framed for UDP
+ * 2) Initial mapping receive buffer size
  * 
  * Check other TODOs in the code
  */ 
@@ -232,6 +237,10 @@ async fn send_signal_tcp_async<T>(mut signal: Box<dyn Stream<Item=T> + Sync + Se
 			return;
 		}
 	};
+
+	// Instead of using TcpStream, write to Framed
+	let mut frame = Framed::new(stream, LengthDelimitedCodec::new());
+
 	let finish_msg = b"F";
 	loop {
 		let mut data: Vec<T> = Vec::new();
@@ -244,15 +253,18 @@ async fn send_signal_tcp_async<T>(mut signal: Box<dyn Stream<Item=T> + Sync + Se
 				None => { 
 					// Signal stream over; send whatever is left in buffer
 					let serialized = serialize(&data).unwrap();
-					stream.write(&serialized).await.unwrap();
-					stream.write(&finish_msg[..]).await.unwrap(); // Indicates finished
+					frame.send(Bytes::from(serialized)).await;
+					frame.send(Bytes::from(&finish_msg[..])).await;
+					//stream.write(&serialized).await.unwrap();
+					//stream.write(&finish_msg[..]).await.unwrap(); // Indicates finished
 					println!("Finished");
 					return;
 				}
 			}
 		}
 		let serialized = serialize(&data).unwrap();
-		stream.write(&serialized).await.unwrap();
+		//stream.write(&serialized).await.unwrap();
+		frame.send(Bytes::from(serialized)).await;
 	}
 }
 

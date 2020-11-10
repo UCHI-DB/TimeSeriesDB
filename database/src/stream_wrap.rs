@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use futures::stream::{Stream,StreamExt};
 use tokio::net::{UdpSocket,TcpListener,TcpStream};
 use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tokio::sync::mpsc::{channel,Receiver};
 use tokio::sync::mpsc::error::TryRecvError;
 use std::net::SocketAddr;
@@ -123,8 +125,8 @@ impl<T> StreamWrap<T> for UdpEndpoint<T>
 // Need separate struct for internal data
 pub struct TcpEndpoint<T> {
     port: u16,
-    clients: Vec<TcpStream>,
-    client_channel: Option<Receiver<TcpStream>>,
+    clients: Vec<Framed<TcpStream,LengthDelimitedCodec>>,
+    client_channel: Option<Receiver<Framed<TcpStream,LengthDelimitedCodec>>>,
 	addr: SocketAddr,
 	byte_buffer: [u8; 4096],
 	buffer: VecDeque<T>,
@@ -178,7 +180,7 @@ impl<T> StreamWrap<T> for TcpEndpoint<T>
             // Initial binding & listener setup
             println!("Initialization");
             let listener = TcpListener::bind(self.addr).await.unwrap();
-            let (sender, receiver) = channel::<TcpStream>(DEFAULT_CLIENT_CHANNEL_BUFFER);
+            let (sender, receiver) = channel::<Framed<TcpStream,LengthDelimitedCodec>>(DEFAULT_CLIENT_CHANNEL_BUFFER);
             self.client_channel = Some(receiver);
             println!("Bind complete");
             tokio::spawn(async move {
@@ -187,7 +189,7 @@ impl<T> StreamWrap<T> for TcpEndpoint<T>
                     match listener.accept().await {
                         Ok((client, _)) => {
                             println!("Listener accepted new client");
-                            match sender.send(client).await {
+                            match sender.send(Framed::new(client, LengthDelimitedCodec::new())).await {
                                 Ok(()) => (),
                                 Err(e) => {
                                     // TODO error handling for failing to send TcpStream from listener to main task
@@ -213,7 +215,6 @@ impl<T> StreamWrap<T> for TcpEndpoint<T>
                     return None;
                 }
             }
-
 		}
         
         //let to_remove: Vec<usize> = Vec::new();
@@ -230,29 +231,39 @@ impl<T> StreamWrap<T> for TcpEndpoint<T>
             // TODO add clients[i] to removed vector to remove disonnected clients
             for i in 0..(self.clients.len()) {
                 let client = &mut (self.clients[i]);
-                match client.read(&mut self.byte_buffer[..]).await {
-                    Ok(recv_size) => {
-                        if recv_size <= 1 {
-                            return_data = None; // Termination Condition
-                            return None;
-                        }
-                        else {
-                            // Deserialization
-                            match bincode::deserialize::<Vec<T>>(&self.byte_buffer[0..recv_size]) {
-                                Ok(data) => {
-                                    for x in data {
-                                        self.buffer.push_back(x); // Push to internal queue, loop back and return item
+                match futures::stream::StreamExt::next(client).await {
+                    // Receive as BytesMut
+                    Some(recv) => {
+                        match recv {
+                            Ok(bytes) => {
+                                if bytes.len() <= 1 {
+                                    return_data = None; // Termination Condition
+                                    return None;
+                                }
+                                else {
+                                    // Deserialization
+                                    //match bincode::deserialize::<Vec<T>>(&self.byte_buffer[0..recv_size]) {
+                                    match bincode::deserialize::<Vec<T>>(&bytes) {
+                                        Ok(data) => {
+                                            for x in data {
+                                                self.buffer.push_back(x); // Push to internal queue, loop back and return item
+                                            }
+                                        }
+                                        Err(e) => {
+                                            println!("Deserialization error - {:?}", e);
+                                        }
                                     }
                                 }
-                                Err(e) => {
-                                    println!("Deserialization error - {:?}", e);
-                                }
                             }
-                        }
+                            Err(e) => {
+                                println!("Error in receiving from client {:?}", e);
+                            }
+                        } 
                     }
-                    Err(e) => {
+                    None => {
                         // TODO error handling in receiving data from client
-                        println!("Failed to get data from client - {:?}", e);
+                        // This should never happen - the Framed should keep on receiving data
+                        println!("Unexpected halt in getting data from client");
                     }
                 }
             }
