@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 
 use futures::stream::{Stream,StreamExt};
+use tokio::stream::StreamMap;
 use tokio::net::{UdpSocket,TcpListener,TcpStream};
 use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -125,11 +126,12 @@ impl<T> StreamWrap<T> for UdpEndpoint<T>
 // Need separate struct for internal data
 pub struct TcpEndpoint<T> {
     port: u16,
-    clients: Vec<Framed<TcpStream,LengthDelimitedCodec>>,
+    clients: StreamMap<usize,Framed<TcpStream,LengthDelimitedCodec>>,
     client_channel: Option<Receiver<Framed<TcpStream,LengthDelimitedCodec>>>,
 	addr: SocketAddr,
-	byte_buffer: [u8; 4096],
+	//byte_buffer: [u8; 4096],
 	buffer: VecDeque<T>,
+	next_id: usize
 }
 
 impl<T> TcpEndpoint<T> {
@@ -139,11 +141,12 @@ impl<T> TcpEndpoint<T> {
 
 		TcpEndpoint {
 			port: port,
-            clients: Vec::new(),
+            clients: StreamMap::new(),
             client_channel: None,
 			addr: addr,
-			byte_buffer: [0; 4096],
+			//byte_buffer: [0; 4096],
 			buffer: buffer,
+			next_id: 0
 		}
     }
     
@@ -153,7 +156,11 @@ impl<T> TcpEndpoint<T> {
         loop {
             match client_channel_ref.try_recv() {
                 Ok(new_client) => {
-                    self.clients.push(new_client);
+					// IMPORTANT to maintain always increasing next_id
+					// or else it will overwrite existing connections
+					// Perhaps this can be used to limit connections
+                    self.clients.insert(self.next_id, new_client);
+					self.next_id += 1;
                 }
                 Err(TryRecvError::Empty) => {
                     break;
@@ -208,7 +215,8 @@ impl<T> StreamWrap<T> for TcpEndpoint<T>
             // Asynchronously wait until we have at least one client
             match self.client_channel.as_mut().unwrap().recv().await {
                 Some(new_client) => {
-                    self.clients.push(new_client);
+                    self.clients.insert(self.next_id, new_client);
+					self.next_id += 1;
                 }
                 None => {
                     // Return as TcpListener closed channel for some reason
@@ -217,7 +225,6 @@ impl<T> StreamWrap<T> for TcpEndpoint<T>
             }
 		}
         
-        //let to_remove: Vec<usize> = Vec::new();
         let return_data: Option<T>;
         loop {
             match self.buffer.pop_front() {
@@ -227,44 +234,41 @@ impl<T> StreamWrap<T> for TcpEndpoint<T>
                     break;
                 }
             };
-            // TODO currently round-robin... potential performance penalty (what if one client blocks?)
-            // TODO add clients[i] to removed vector to remove disonnected clients
-            for i in 0..(self.clients.len()) {
-                let client = &mut (self.clients[i]);
-                match futures::stream::StreamExt::next(client).await {
-                    // Receive as BytesMut
-                    Some(recv) => {
-                        match recv {
-                            Ok(bytes) => {
-                                if bytes.len() <= 1 {
-                                    return_data = None; // Termination Condition
-                                    return None;
-                                }
-                                else {
-                                    // Deserialization
-                                    //match bincode::deserialize::<Vec<T>>(&self.byte_buffer[0..recv_size]) {
-                                    match bincode::deserialize::<Vec<T>>(&bytes) {
-                                        Ok(data) => {
-                                            for x in data {
-                                                self.buffer.push_back(x); // Push to internal queue, loop back and return item
-                                            }
+
+            // TODO add support for removed/disonnected clients
+            match futures::stream::StreamExt::next(&mut self.clients).await {
+                // Receive as BytesMut
+                Some((_clientid, recv)) => {
+                    match recv {
+                        Ok(bytes) => {
+                            if bytes.len() <= 1 {
+                                return_data = None; // Termination Condition
+                                return None;
+                            }
+                            else {
+                                // Deserialization
+                                //match bincode::deserialize::<Vec<T>>(&self.byte_buffer[0..recv_size]) {
+                                match bincode::deserialize::<Vec<T>>(&bytes) {
+                                    Ok(data) => {
+                                        for x in data {
+                                            self.buffer.push_back(x); // Push to internal queue, loop back and return item
                                         }
-                                        Err(e) => {
-                                            println!("Deserialization error - {:?}", e);
-                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("Deserialization error - {:?}", e);
                                     }
                                 }
                             }
-                            Err(e) => {
-                                println!("Error in receiving from client {:?}", e);
-                            }
-                        } 
-                    }
-                    None => {
-                        // TODO error handling in receiving data from client
-                        // This should never happen - the Framed should keep on receiving data
-                        println!("Unexpected halt in getting data from client");
-                    }
+                        }
+                        Err(e) => {
+                            println!("Error in receiving from client {:?}", e);
+                        }
+                    } 
+                }
+                None => {
+                    // TODO error handling in receiving data from client
+                    // This should never happen - the Framed should keep on receiving data
+                    println!("Unexpected halt in getting data from client");
                 }
             }
         }
