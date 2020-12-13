@@ -1,5 +1,6 @@
 extern crate tokio;
 
+use std::cmp::min;
 use std::str::FromStr;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -19,8 +20,10 @@ use rustfft::FFTnum;
 use num::Float;
 use ndarray_linalg::Lapack;
 use std::ptr::null;
+use std::sync::atomic::{Ordering};
 
 use tokio::runtime::Builder; // Used for testing
+use tokio::time::sleep;
 use tokio::stream::Stream;
 use futures::prelude::Future;
 use std::pin::Pin;
@@ -31,6 +34,8 @@ use crate::stream_wrap::StreamWrap;
 
 pub type SignalId = u64;
 const DEFAULT_BATCH_SIZE: usize = 50;
+const BACKOFF_SLEEP_MS: u64 = 5;
+const MAX_SLEEP_MS: u64 = 100;
 
 /*
 TODO
@@ -96,10 +101,14 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 	let mut time_lapse: Vec<Duration> = Vec::with_capacity(bs.seg_size);
 	let mut compression_percentage: f64 = 0.0;
 	let mut segments_produced: u32 = 0;
-
 	let mut batch_vec: Vec<T> = Vec::new();
 	let mut bsize = 0;
 	
+	let buffer_full = match bs.buffer.lock() {
+		Ok(mut buf) => buf.get_full_status_semaphore(),
+		Err(_)  => panic!("Failed to acquire buffer write lock"), // Currently panics if can't get it
+	}; 
+
 	let start = Instant::now();
 	let mut timestamp = SystemTime::now();
 
@@ -170,6 +179,8 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 					}
 
 
+					/*
+					* This part is commented out, as we use no-data-being-dropped for performance testing
 					match bs.buffer.lock() {
 						Ok(mut buf) => match buf.put(seg) {
 							Ok(()) => (),
@@ -177,7 +188,29 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 						},
 						Err(_)  => panic!("Failed to acquire buffer write lock"),
 					}; /* Currently panics if can't get it */
-
+					*/
+					
+					// Delete below and uncomment above if we want to drop data (i.e. allow evict_no_saving() to be called in the buf.put())
+					
+					loop {
+						let mut sleep_time = BACKOFF_SLEEP_MS;
+						while buffer_full.load(Ordering::Acquire) {
+							sleep(Duration::from_millis(sleep_time)).await;
+							sleep_time = min(sleep_time * 2, MAX_SLEEP_MS);
+						}
+						match bs.buffer.lock() {
+							Ok(mut buf) => {
+								if !(buffer_full.load(Ordering::Acquire)) {
+									match buf.put(seg) {
+										Ok(()) => (),
+										Err(e) => panic!("Failed to put segment in buffer: {:?}", e),
+									}
+									break;
+								}
+							}
+							Err(_)  => panic!("Failed to acquire buffer write lock"),
+						}; /* Currently panics if can't get it */
+					}
 				}
 
 				/* Always add the newly received data  */
@@ -702,7 +735,7 @@ fn run_dual_signals() {
 	let sig1 = BufferedSignal::new(1, client1, 400, buffer.clone(), |i,j| i >= j, |_| (), false,None);
 	let sig2 = BufferedSignal::new(2, client2, 600, buffer.clone(), |i,j| i >= j, |_| (), false,None);
 
-	let mut rt = match Builder::new().build() {
+	let mut rt = match Builder::new_multi_thread().build() {
 		Ok(rt) => rt,
 		_ => panic!("Failed to build runtime"),
 	};
@@ -805,7 +838,7 @@ fn run_single_signals() {
     let sig1 = BufferedSignal::new(1, client1, 1000, buffer.clone(), |i,j| i >= j, |_| (), false, None);
     let sig2 = BufferedSignal::new(2, client2, 1000, buffer.clone(), |i,j| i >= j, |_| (), false,None);
 
-    let mut rt = match Builder::new().build() {
+    let mut rt = match Builder::new_multi_thread().build() {
         Ok(rt) => rt,
         _ => panic!("Failed to build runtime"),
     };

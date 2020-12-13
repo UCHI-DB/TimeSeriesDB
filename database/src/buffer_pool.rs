@@ -5,6 +5,8 @@ use rocksdb::DBVector;
 use crate::file_handler::{FileManager};
 use std::collections::vec_deque::Drain;
 use std::collections::hash_map::{HashMap,Entry};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool,Ordering};
 
 use crate::segment;
 
@@ -90,6 +92,13 @@ pub trait SegmentBuffer<T: Copy + Send> {
 
 	/* Signal done*/
 	fn is_done(&self)->bool;
+
+	/* Update semaphore for storing current length
+	 * Note that all operations in this struct are not thread-safe,
+	 * this function just allows other contexts to check the status of the buffer
+	 * without grabbing the lock
+	 */ 
+	fn get_full_status_semaphore(&self) -> Arc<AtomicBool>;
 }
 
 
@@ -132,6 +141,7 @@ pub struct ClockBuffer<T,U>
 	file_manager: U,
 	buf_size: usize,
 	done: bool,
+	full_status_semaphore: Arc<AtomicBool>
 }
 
 
@@ -207,6 +217,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 		self.buffer.clear();
 		self.clock.clear();
 		self.done = true;
+		self.full_status_semaphore.store(false, Ordering::SeqCst);
 	}
 
 
@@ -224,6 +235,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 					None => {
 						//println!("Failed to get segment from buffer.");
 						self.update_tail();
+						self.update_semaphore();
 						return Err(BufErr::EvictFailure)
 					},
 				};
@@ -232,6 +244,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 					_ => (),
 				}
 				//println!("fetch a segment from buffer.");
+				self.full_status_semaphore.store(false, Ordering::Release);
 				return Ok(seg);
 			} else {
 				self.clock[self.tail].1 = false;
@@ -240,6 +253,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 			self.update_tail();
 			counter += 1;
 			if counter > self.clock.len() {
+				self.full_status_semaphore.store(false, Ordering::Release);
 				return Err(BufErr::BufEmpty); 
 			}
 		}
@@ -247,6 +261,10 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 
 	fn exceed_batch(&self, batchsize: usize) -> bool {
 		return self.buffer.len() >= batchsize;
+	}
+
+	fn get_full_status_semaphore(&self) -> Arc<AtomicBool> {
+		return self.full_status_semaphore.clone();
 	}
 }
 
@@ -265,6 +283,7 @@ impl<T,U> ClockBuffer<T,U>
 			file_manager: file_manager,
 			buf_size: buf_size,
 			done: false,
+			full_status_semaphore: Arc::new(AtomicBool::new(false))
 		}
 	}
 
@@ -283,6 +302,11 @@ impl<T,U> ClockBuffer<T,U>
 	#[inline]
 	fn update_tail(&mut self) {
 		self.tail = (self.tail + 1) % self.clock.len();
+	}
+
+	#[inline]
+	fn update_semaphore(&self) {
+		self.full_status_semaphore.store(self.buffer.len() >= self.buf_size, Ordering::Release);
 	}
 
 	fn put_with_key(&mut self, key: SegmentKey, seg: Segment<T>) -> Result<(), BufErr> {
@@ -306,6 +330,7 @@ impl<T,U> ClockBuffer<T,U>
 			Entry::Occupied(_) => panic!("Non-unique key panic as clock map and buffer are desynced somehow"),
 			Entry::Vacant(vacancy) => {
 				vacancy.insert(seg);
+				self.update_semaphore();
 				Ok(())
 			}
 		}
@@ -404,6 +429,7 @@ pub struct NoFmClockBuffer<T>
 	clock_map: HashMap<SegmentKey,usize>,
 	buf_size: usize,
 	done: bool,
+	full_status_semaphore: Arc<AtomicBool>
 }
 
 
@@ -446,6 +472,7 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 	fn flush(&mut self) {
 		self.buffer.clear();
 		self.clock.clear();
+		self.full_status_semaphore.store(false, Ordering::Release);
 		self.done = true;
 	}
 
@@ -465,7 +492,7 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 					None => panic!("Non-unique key panic as clock map and buffer are desynced somehow"),
 					_ => (),
 				}
-
+				self.full_status_semaphore.store(false, Ordering::Release);
 				return Ok(seg);
 			} else {
 				self.clock[self.hand].1 = false;
@@ -474,6 +501,7 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 			self.update_hand();
 			counter += 1;
 			if counter >= self.clock.len() {
+				self.full_status_semaphore.store(false, Ordering::Release);
 				return Err(BufErr::BufEmpty);
 			}
 		}
@@ -481,6 +509,10 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 
 	fn exceed_batch(&self, batchsize: usize) -> bool {
 		return self.buffer.len() >= batchsize;
+	}
+
+	fn get_full_status_semaphore(&self) -> Arc<AtomicBool> {
+		return self.full_status_semaphore.clone();
 	}
 }
 
@@ -497,6 +529,7 @@ impl<T> NoFmClockBuffer<T>
 			clock_map: HashMap::with_capacity(buf_size),
 			buf_size: buf_size,
 			done:false,
+			full_status_semaphore: Arc::new(AtomicBool::new(false))
 		}
 	}
 
@@ -510,6 +543,11 @@ impl<T> NoFmClockBuffer<T>
 	#[inline]
 	fn update_hand(&mut self) {
 		self.hand = (self.hand + 1) % self.buf_size;
+	}
+
+	#[inline]
+	fn update_semaphore(&self) {
+		self.full_status_semaphore.store(self.buffer.len() >= self.buf_size, Ordering::Release);
 	}
 
 	fn put_with_key(&mut self, key: SegmentKey, seg: Segment<T>) -> Result<(), BufErr> {
@@ -533,6 +571,7 @@ impl<T> NoFmClockBuffer<T>
 			Entry::Occupied(_) => panic!("Non-unique key panic as clock map and buffer are desynced somehow"),
 			Entry::Vacant(vacancy) => {
 				vacancy.insert(seg);
+				self.update_semaphore();
 				Ok(())
 			}
 		}
