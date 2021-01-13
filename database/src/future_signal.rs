@@ -34,8 +34,8 @@ use crate::stream_wrap::StreamWrap;
 
 pub type SignalId = u64;
 const DEFAULT_BATCH_SIZE: usize = 50;
-const BACKOFF_SLEEP_MS: u64 = 5;
-const MAX_SLEEP_MS: u64 = 100;
+const BACKOFF_SLEEP_MS: u64 = 100;
+const MAX_SLEEP_MS: u64 = 100000;
 
 /*
 TODO
@@ -125,6 +125,10 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 					println!("Signal: {}\n Segments produced: {}\n Data points in total {} \n Time: {:?}\n Throughput: {:?} points/second", bs.signal_id, (segments_produced as usize)/bs.seg_size, segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
 					println!("{},{:?},{:?}", segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
 				}
+                match bs.buffer.lock() {
+                    Ok(mut buf) => { buf.is_done(); }
+                    Err(_) => ()
+                }
 				return prev_seg_offset;
 			}
 			/* Err(e) => {
@@ -193,14 +197,19 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 					// Delete below and uncomment above if we want to drop data (i.e. allow evict_no_saving() to be called in the buf.put())
 					
 					loop {
+                        /*
+                        // This code is for exponential back off
 						let mut sleep_time = BACKOFF_SLEEP_MS;
-						while buffer_full.load(Ordering::Acquire) {
-							sleep(Duration::from_millis(sleep_time)).await;
+						while buffer_full.load(Ordering::Relaxed) {
+							sleep(Duration::from_micros(sleep_time)).await;
 							sleep_time = min(sleep_time * 2, MAX_SLEEP_MS);
 						}
+                        */
 						match bs.buffer.lock() {
 							Ok(mut buf) => {
-								if !(buffer_full.load(Ordering::Acquire)) {
+								//if !(buffer_full.load(Ordering::Acquire)) {
+                                if !(buf.is_full()) {
+                                // if (true) {
 									match buf.put(seg) {
 										Ok(()) => (),
 										Err(e) => panic!("Failed to put segment in buffer: {:?}", e),

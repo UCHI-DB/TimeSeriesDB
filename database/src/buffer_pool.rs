@@ -99,6 +99,8 @@ pub trait SegmentBuffer<T: Copy + Send> {
 	 * without grabbing the lock
 	 */ 
 	fn get_full_status_semaphore(&self) -> Arc<AtomicBool>;
+
+    fn is_full(&self) -> bool;
 }
 
 
@@ -141,7 +143,8 @@ pub struct ClockBuffer<T,U>
 	file_manager: U,
 	buf_size: usize,
 	done: bool,
-	full_status_semaphore: Arc<AtomicBool>
+	full_status_semaphore: Arc<AtomicBool>,
+    evicted: usize
 }
 
 
@@ -174,6 +177,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 
 
 	fn is_done(&self)->bool{
+        println!("Evicted: {}",self.evicted);
 		self.done
 	}
 
@@ -235,7 +239,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 					None => {
 						//println!("Failed to get segment from buffer.");
 						self.update_tail();
-						self.update_semaphore();
+						//self.update_semaphore();
 						return Err(BufErr::EvictFailure)
 					},
 				};
@@ -244,7 +248,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 					_ => (),
 				}
 				//println!("fetch a segment from buffer.");
-				self.full_status_semaphore.store(false, Ordering::Release);
+				//self.full_status_semaphore.store(false, Ordering::Relaxed);
 				return Ok(seg);
 			} else {
 				self.clock[self.tail].1 = false;
@@ -253,7 +257,7 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 			self.update_tail();
 			counter += 1;
 			if counter > self.clock.len() {
-				self.full_status_semaphore.store(false, Ordering::Release);
+				//self.full_status_semaphore.store(false, Ordering::Relaxed);
 				return Err(BufErr::BufEmpty); 
 			}
 		}
@@ -266,6 +270,11 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 	fn get_full_status_semaphore(&self) -> Arc<AtomicBool> {
 		return self.full_status_semaphore.clone();
 	}
+
+    #[inline]
+    fn is_full(&self) -> bool {
+        return self.buffer.len() >= self.buf_size;
+    }
 }
 
 
@@ -283,7 +292,8 @@ impl<T,U> ClockBuffer<T,U>
 			file_manager: file_manager,
 			buf_size: buf_size,
 			done: false,
-			full_status_semaphore: Arc::new(AtomicBool::new(false))
+			full_status_semaphore: Arc::new(AtomicBool::new(false)),
+            evicted: 0
 		}
 	}
 
@@ -306,11 +316,12 @@ impl<T,U> ClockBuffer<T,U>
 
 	#[inline]
 	fn update_semaphore(&self) {
-		self.full_status_semaphore.store(self.buffer.len() >= self.buf_size, Ordering::Release);
+		self.full_status_semaphore.store(self.buffer.len() >= self.buf_size, Ordering::Relaxed);
 	}
 
 	fn put_with_key(&mut self, key: SegmentKey, seg: Segment<T>) -> Result<(), BufErr> {
 		let slot = if self.buffer.len() >= self.buf_size {
+            self.evicted += 1;
 			let slot = self.evict_no_saving()?;
 			self.clock[slot] = (key,true);
 			slot
@@ -330,7 +341,7 @@ impl<T,U> ClockBuffer<T,U>
 			Entry::Occupied(_) => panic!("Non-unique key panic as clock map and buffer are desynced somehow"),
 			Entry::Vacant(vacancy) => {
 				vacancy.insert(seg);
-				self.update_semaphore();
+				//self.update_semaphore();
 				Ok(())
 			}
 		}
@@ -514,6 +525,11 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 	fn get_full_status_semaphore(&self) -> Arc<AtomicBool> {
 		return self.full_status_semaphore.clone();
 	}
+    
+    #[inline]
+    fn is_full(&self) -> bool {
+        return self.buffer.len() >= self.buf_size;
+    }
 }
 
 
