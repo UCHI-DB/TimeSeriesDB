@@ -741,8 +741,8 @@ fn run_dual_signals() {
 		Err(_) => panic!("Failed to create client2"),
 	};
 
-	let sig1 = BufferedSignal::new(1, client1, 400, buffer.clone(), |i,j| i >= j, |_| (), false,None);
-	let sig2 = BufferedSignal::new(2, client2, 600, buffer.clone(), |i,j| i >= j, |_| (), false,None);
+	let sig1 = BufferedSignalReduced::new(1, Box::new(client1), 400, buffer.clone(), Box::new(|i,j| i >= j), Box::new(|_| ()), false,None);
+	let sig2 = BufferedSignalReduced::new(2, Box::new(client2), 600, buffer.clone(), Box::new(|i,j| i >= j), Box::new(|_| ()), false,None);
 
 	let mut rt = match Builder::new_multi_thread().build() {
 		Ok(rt) => rt,
@@ -751,11 +751,13 @@ fn run_dual_signals() {
 
 
 	let result = rt.block_on(async move {
-		try_join!(sig1, sig2)
+        let sig1_handle = run_buffered_signal(sig1);
+        let sig2_handle = run_buffered_signal(sig2);
+		join!(sig1_handle, sig2_handle)
 	});
 
 	let (seg_key1,seg_key2) = match result {
-		Ok((Some(time1),Some(time2))) => (SegmentKey::new(time1,1),SegmentKey::new(time2,2)),
+	    (Some(time1),Some(time2)) => (SegmentKey::new(time1,1),SegmentKey::new(time2,2)),
 		_ => panic!("Failed to get the last system time for signal1 or signal2"),
 	};
 	/*
@@ -844,8 +846,8 @@ fn run_single_signals() {
             Err(_) => panic!("Failed to create client2"),
         };
 	let start = Instant::now();
-    let sig1 = BufferedSignal::new(1, client1, 1000, buffer.clone(), |i,j| i >= j, |_| (), false, None);
-    let sig2 = BufferedSignal::new(2, client2, 1000, buffer.clone(), |i,j| i >= j, |_| (), false,None);
+	let sig1 = BufferedSignalReduced::new(1, Box::new(client1), 1000, buffer.clone(), Box::new(|i,j| i >= j), Box::new(|_| ()), false,None);
+	let sig2 = BufferedSignalReduced::new(2, Box::new(client2), 1000, buffer.clone(), Box::new(|i,j| i >= j), Box::new(|_| ()), false,None);
 
     let mut rt = match Builder::new_multi_thread().build() {
         Ok(rt) => rt,
@@ -864,10 +866,12 @@ fn run_single_signals() {
 //	});
 
 	let result = rt.block_on(async move {
-		try_join!(sig1, sig2)
+        let sig1_handle = run_buffered_signal(sig1);
+        let sig2_handle = run_buffered_signal(sig2);
+		tokio::join!(sig1_handle, sig2_handle)
 	});
 	let (seg_key1,seg_key2) = match result {
-		Ok((Some(time1),Some(time2))) => (SegmentKey::new(time1,1),SegmentKey::new(time2,2)),
+		(Some(time1),Some(time2)) => (SegmentKey::new(time1,1),SegmentKey::new(time2,2)),
 		_ => panic!("Failed to get the last system time for signal1 or signal2"),
 	};
 	let duration = start.elapsed();

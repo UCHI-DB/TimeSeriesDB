@@ -24,6 +24,11 @@ path = "src/pscan/main.rs"
 name = "knn"
 path = "src/knn/main.rs"
 
+[dev-dependencies]
+criterion = "0.3.3"
+[[bench]]
+name = "db_benchmark"
+harness = false
 
 [dependencies]
 num = "0.2"
