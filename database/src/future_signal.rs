@@ -216,6 +216,7 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 									}
 									break;
 								}
+								// else { println!("Buffer is full!"); }
 							}
 							Err(_)  => panic!("Failed to acquire buffer write lock"),
 						}; /* Currently panics if can't get it */

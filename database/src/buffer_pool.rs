@@ -483,7 +483,7 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 	fn flush(&mut self) {
 		self.buffer.clear();
 		self.clock.clear();
-		self.full_status_semaphore.store(false, Ordering::Release);
+		//self.full_status_semaphore.store(false, Ordering::Release);
 		self.done = true;
 	}
 
@@ -494,25 +494,28 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 	fn remove_segment(&mut self) -> Result<Segment<T>,BufErr> {
 		let mut counter = 0;
 		loop {
-			if let (seg_key,false) = self.clock[self.hand] {
+			if let (seg_key,false) = self.clock[self.tail] {
 				let seg = match self.buffer.remove(&seg_key) {
 					Some(seg) => seg,
-					None => return Err(BufErr::EvictFailure),
+					None => {
+						self.update_tail();
+						return Err(BufErr::EvictFailure);
+					}
 				};
 				match self.clock_map.remove(&seg_key) {
 					None => panic!("Non-unique key panic as clock map and buffer are desynced somehow"),
 					_ => (),
 				}
-				self.full_status_semaphore.store(false, Ordering::Release);
+				//self.full_status_semaphore.store(false, Ordering::Release);
 				return Ok(seg);
 			} else {
-				self.clock[self.hand].1 = false;
+				self.clock[self.tail].1 = false;
 			} 
 
-			self.update_hand();
+			self.update_tail();
 			counter += 1;
 			if counter >= self.clock.len() {
-				self.full_status_semaphore.store(false, Ordering::Release);
+				//self.full_status_semaphore.store(false, Ordering::Release);
 				return Err(BufErr::BufEmpty);
 			}
 		}
@@ -562,6 +565,11 @@ impl<T> NoFmClockBuffer<T>
 	}
 
 	#[inline]
+	fn update_tail(&mut self) {
+		self.tail = (self.tail + 1) % self.clock.len();
+	}
+
+	#[inline]
 	fn update_semaphore(&self) {
 		self.full_status_semaphore.store(self.buffer.len() >= self.buf_size, Ordering::Release);
 	}
@@ -587,7 +595,6 @@ impl<T> NoFmClockBuffer<T>
 			Entry::Occupied(_) => panic!("Non-unique key panic as clock map and buffer are desynced somehow"),
 			Entry::Vacant(vacancy) => {
 				vacancy.insert(seg);
-				self.update_semaphore();
 				Ok(())
 			}
 		}
@@ -604,6 +611,7 @@ impl<T> NoFmClockBuffer<T>
 					None => panic!("Non-unique key panic as clock map and buffer are desynced somehow"),
 					_ => (),
 				}
+				return Ok(self.hand);
 			} else {
 				self.clock[self.hand].1 = false;
 			} 

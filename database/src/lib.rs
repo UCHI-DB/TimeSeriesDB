@@ -1118,3 +1118,120 @@ fn load_mappingserver(config: &Value, mapping: HashMap<u64, u16, FnvBuildHasher>
 	}
 	mapping_servers
 }
+
+
+
+
+
+/* Test functions for criterion */
+
+pub fn dummy_compression(seg_buf: Arc<Mutex<dyn SegmentBuffer<f64> + Send + Sync>>, delay_micros: u64, threshold: f32, batch: usize) {
+	let sleep_time = Duration::from_micros(delay_micros);
+	let mut segments_produced: u64 = 0;
+    loop {
+        match seg_buf.lock() {
+            Ok(mut buf) => {
+                // println!("Lock aquired");
+                if buf.exceed_threshold(threshold) && buf.exceed_batch(batch) {
+                    let mut count: usize = 0;
+                    loop {
+                        match buf.remove_segment(){
+                            Ok(seg) => {
+                                count += 1;
+                                if count == batch {
+									segments_produced += (count as u64);
+									println!("Seg produced: {}", segments_produced);
+                                    break;
+                                }
+                            },
+                            Err(_) => continue,
+                        }
+                    }
+                } else {
+                    //println!("Buffer not full enough");
+                }
+            }
+            Err(_) => {
+                println!("Error in locking!");
+            }
+        }
+        /* Set delay here - simulated work */
+        std::thread::sleep(sleep_time);
+    }
+}
+
+
+/* FOR NEXT WEEK: test with FIRST varying sleep time... then work on multiple clients/compression */
+pub fn bench_test(amount: u64, num_clients: u64, num_comp:i32, delay_micros: u64)
+{
+	println!("Params: amount {}, client {}, comp {}, delay: {}", amount, num_clients, num_comp, delay_micros);
+    /* Buffer size */
+    let buffer_size: usize = 100;
+	let buf = Box::new(Arc::new(Mutex::new(NoFmClockBuffer::<f64>::new(buffer_size))));
+    
+    /* Client settings */
+    let mean = 1.0;
+    let std = 1.0;
+    
+
+    /* Signal settings */
+    let seg_size = 1000;
+
+    /* Client loading */
+    let mut signals: Vec<Box<BufferedSignalReduced<f64>>> = Vec::new();
+    for i in 0..num_clients {
+		let amount = Amount::Limited(amount);
+		let run_period = RunPeriod::Indefinite;
+		let frequency = Frequency::Immediate;
+
+		let split_decider = Box::new(|i,j| i >= j);
+    	let compress_func: Box<dyn Fn(&mut Segment<f64>) + Send> = Box::new(|_| ());
+        let client: Box<(dyn StreamWrap<f64> + Sync + Send + Unpin)> = Box::new(construct_normal_gen_client(mean, std, amount, run_period, frequency));
+        signals.push(Box::new(BufferedSignalReduced::new(i, client, seg_size, *buf.clone(), split_decider, compress_func, false, None)))
+    }
+
+    /* Compression seetings */
+    let delay_micros = 0;
+    let threshold = 0.0;
+	let batch = 20;
+
+	/* Construct compression threads */
+	let mut comp_handlers = Vec::new();
+	for x in 0..num_comp {
+		let buf_cloned = *buf.clone();
+		let handle = thread::spawn(move || {
+			//println!("Run compression demon" );
+			dummy_compression(buf_cloned, delay_micros, threshold, batch);
+			//println!("Compression complete");
+		});
+		comp_handlers.push(handle);
+	}
+
+    /* Construct the runtime */
+    let worker_threads = 8;
+    let max_threads = 100;
+	let mut rt = Builder::new_multi_thread()
+                    .worker_threads(worker_threads)
+                    .max_threads(max_threads)
+                    .enable_all()
+                    .on_thread_start(|| println!("Threads have been constructed"))
+                    .build()
+                    .expect("Failed to produce the custom runtime");
+
+	/* Wait for the future signals to finish. */
+	let mut joins = Vec::new();
+	for sig in signals {
+		joins.push(rt.spawn(run_buffered_signal(*sig)));
+	}
+
+	let curr_time = Instant::now();
+	let results = rt.block_on(join_all(joins));
+	for result in results {
+		match result {
+			Ok(Some(x)) => println!("Produced a timestamp: {:?}", x),
+			_ => println!("Failed to produce a timestamp"),
+		}
+	}
+	let elapsed = curr_time.elapsed();
+	println!("Global time: {:?}", elapsed);
+}
