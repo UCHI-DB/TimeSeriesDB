@@ -603,6 +603,10 @@ impl<T> NoFmClockBuffer<T>
 	fn evict(&mut self) -> Result<usize,BufErr> {
 		loop {
 			if let (seg_key,false) = self.clock[self.hand] {
+                self.buffer.remove(&seg_key);
+                self.clock_map.remove(&seg_key);
+                return Ok(self.hand);
+                /*
 				let _seg = match self.buffer.remove(&seg_key) {
 					Some(seg) => seg,
 					None => return Err(BufErr::EvictFailure),
@@ -612,6 +616,7 @@ impl<T> NoFmClockBuffer<T>
 					_ => (),
 				}
 				return Ok(self.hand);
+                */
 			} else {
 				self.clock[self.hand].1 = false;
 			} 

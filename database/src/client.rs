@@ -123,6 +123,9 @@ impl<T,U> Stream for Client<T,U>
 
 		match self.frequency {
 			Frequency::Immediate => {
+                if let Some(items) =  self.produced {
+                    self.produced = Some(items + 1);
+                }
 				return Pin::new(&mut self.producer).poll_next(cx);
 			}
 			Frequency::Delayed(ref mut interval) => {
@@ -133,6 +136,9 @@ impl<T,U> Stream for Client<T,U>
 						Err(())
 					} */
 					_ =>  {
+                        if let Some(items) =  self.produced {
+                            self.produced = Some(items + 1);
+                        }
 						return T::poll_next(Pin::new(&mut self.producer), cx);
 					}
 				}

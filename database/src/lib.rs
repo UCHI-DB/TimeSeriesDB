@@ -1125,10 +1125,13 @@ fn load_mappingserver(config: &Value, mapping: HashMap<u64, u16, FnvBuildHasher>
 
 /* Test functions for criterion */
 
-pub fn dummy_compression(seg_buf: Arc<Mutex<dyn SegmentBuffer<f64> + Send + Sync>>, delay_micros: u64, threshold: f32, batch: usize) {
-	let sleep_time = Duration::from_micros(delay_micros);
+pub fn dummy_compression(seg_buf: Arc<Mutex<dyn SegmentBuffer<f64> + Send + Sync>>, delay_nanos: u64, threshold: f32, batch: usize, stop_sig: Arc<AtomicBool>) -> u64 {
+	let sleep_time = std::time::Duration::from_nanos(delay_nanos);
 	let mut segments_produced: u64 = 0;
     loop {
+        if (stop_sig.load(Ordering::Relaxed) == false) {
+            break;
+        }
         match seg_buf.lock() {
             Ok(mut buf) => {
                 // println!("Lock aquired");
@@ -1140,7 +1143,7 @@ pub fn dummy_compression(seg_buf: Arc<Mutex<dyn SegmentBuffer<f64> + Send + Sync
                                 count += 1;
                                 if count == batch {
 									segments_produced += (count as u64);
-									println!("Seg produced: {}", segments_produced);
+									// println!("Seg produced: {}", segments_produced);
                                     break;
                                 }
                             },
@@ -1156,15 +1159,19 @@ pub fn dummy_compression(seg_buf: Arc<Mutex<dyn SegmentBuffer<f64> + Send + Sync
             }
         }
         /* Set delay here - simulated work */
-        std::thread::sleep(sleep_time);
+        if (delay_nanos > 0) {
+            std::thread::sleep(sleep_time);
+        }
     }
+
+    return segments_produced;
 }
 
 
 /* FOR NEXT WEEK: test with FIRST varying sleep time... then work on multiple clients/compression */
-pub fn bench_test(amount: u64, num_clients: u64, num_comp:i32, delay_micros: u64)
+pub fn bench_test(amount: u64, num_clients: u64, num_comp:i32, delay_nanos: u64)
 {
-	println!("Params: amount {}, client {}, comp {}, delay: {}", amount, num_clients, num_comp, delay_micros);
+	// println!("Params: amount {}, client {}, comp {}, delay: {}", amount, num_clients, num_comp, delay_micros);
     /* Buffer size */
     let buffer_size: usize = 100;
 	let buf = Box::new(Arc::new(Mutex::new(NoFmClockBuffer::<f64>::new(buffer_size))));
@@ -1191,30 +1198,32 @@ pub fn bench_test(amount: u64, num_clients: u64, num_comp:i32, delay_micros: u64
     }
 
     /* Compression seetings */
-    let delay_micros = 0;
     let threshold = 0.0;
 	let batch = 20;
 
 	/* Construct compression threads */
+    let stop_signal = Arc::new(AtomicBool::new(true));
 	let mut comp_handlers = Vec::new();
 	for x in 0..num_comp {
 		let buf_cloned = *buf.clone();
+        let stop_signal_clone = stop_signal.clone();
+        let delay_copy = delay_nanos;
 		let handle = thread::spawn(move || {
-			//println!("Run compression demon" );
-			dummy_compression(buf_cloned, delay_micros, threshold, batch);
+			//println!("Run compression demon {}", delay_copy);
+			return dummy_compression(buf_cloned, delay_copy, threshold, batch, stop_signal_clone);
 			//println!("Compression complete");
 		});
 		comp_handlers.push(handle);
 	}
 
     /* Construct the runtime */
-    let worker_threads = 8;
+    let worker_threads = num_clients as usize;
     let max_threads = 100;
 	let mut rt = Builder::new_multi_thread()
                     .worker_threads(worker_threads)
                     .max_threads(max_threads)
                     .enable_all()
-                    .on_thread_start(|| println!("Threads have been constructed"))
+                    //.on_thread_start(|| println!("Threads have been constructed"))
                     .build()
                     .expect("Failed to produce the custom runtime");
 
@@ -1226,12 +1235,21 @@ pub fn bench_test(amount: u64, num_clients: u64, num_comp:i32, delay_micros: u64
 
 	let curr_time = Instant::now();
 	let results = rt.block_on(join_all(joins));
+    /*
 	for result in results {
 		match result {
 			Ok(Some(x)) => println!("Produced a timestamp: {:?}", x),
 			_ => println!("Failed to produce a timestamp"),
 		}
 	}
+    */
+    stop_signal.store(false, Ordering::Relaxed);
+
+    let mut total_processed = 0;
+    for comp in comp_handlers {
+        total_processed += comp.join().unwrap();
+    }
+
 	let elapsed = curr_time.elapsed();
-	println!("Global time: {:?}", elapsed);
+	println!("Proc Seg - Global time: {}, {:?}", total_processed, elapsed);
 }

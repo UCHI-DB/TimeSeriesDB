@@ -122,8 +122,8 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 					println!("Signal: {}\n Segments produced: {}\n Compression percentage: {}\n Time: {:?}", bs.signal_id, segments_produced, percentage, elapse);
 				} else {
 					//self.buffer.lock().unwrap().flush();
-					println!("Signal: {}\n Segments produced: {}\n Data points in total {} \n Time: {:?}\n Throughput: {:?} points/second", bs.signal_id, (segments_produced as usize)/bs.seg_size, segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
-					println!("{},{:?},{:?}", segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
+					//println!("Signal: {}\n Segments produced: {}\n Data points in total {} \n Time: {:?}\n Throughput: {:?} points/second", bs.signal_id, (segments_produced as usize)/bs.seg_size, segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
+					//println!("{},{:?},{:?}", segments_produced, elapse, (segments_produced as f64) / ((elapse.as_nanos() as f64) / (1_000_000_000 as f64)));
 				}
                 match bs.buffer.lock() {
                     Ok(mut buf) => { buf.is_done(); }
@@ -183,8 +183,8 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 					}
 
 
-					/*
-					* This part is commented out, as we use no-data-being-dropped for performance testing
+					
+					// This part is commented out, as we use no-data-being-dropped for performance testing
 					match bs.buffer.lock() {
 						Ok(mut buf) => match buf.put(seg) {
 							Ok(()) => (),
@@ -192,10 +192,10 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 						},
 						Err(_)  => panic!("Failed to acquire buffer write lock"),
 					}; /* Currently panics if can't get it */
-					*/
+					
 					
 					// Delete below and uncomment above if we want to drop data (i.e. allow evict_no_saving() to be called in the buf.put())
-					
+					/*
 					loop {
                         /*
                         // This code is for exponential back off
@@ -221,8 +221,9 @@ pub async fn run_buffered_signal<T>(mut bs: BufferedSignalReduced<T>)
 							Err(_)  => panic!("Failed to acquire buffer write lock"),
 						}; /* Currently panics if can't get it */
 					}
+                    */
 				}
-
+                
 				/* Always add the newly received data  */
 				//println!("ID {} receieved {:?}", self.signal_id, value);
 				data.push(value);
