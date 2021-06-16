@@ -6,10 +6,6 @@ use std::mem;
 use crate::client::construct_file_iterator_skip_newline;
 use std::fmt::Debug;
 use serde::{Serialize, Deserialize};
-use std::time::{SystemTime, Instant};
-use crate::segment::Segment;
-use crate::compress::gorilla::GorillaCompress;
-use std::any::Any;
 
 pub const MAX_BITS: usize = 32;
 pub const BYTE_BITS: usize = 8;
@@ -188,7 +184,7 @@ impl<'a> BitPack<&'a [u8]> {
     }
 
     /***
-    read bits less than BYTE_BITS
+    read bits less then BYTE_BITS
      */
 
     #[inline]
@@ -248,14 +244,6 @@ impl<'a> BitPack<&'a [u8]> {
         let end = self.cursor+n;
         let output = &self.buff[self.cursor..end];
         self.cursor += n-1;
-        Ok(output)
-    }
-
-    #[inline]
-    pub fn read_n_byte_unmut(&self,start:usize, n:usize) -> Result<&[u8], usize> {
-        let s = start+self.cursor + 1;
-        let end =s+n;
-        let output = &self.buff[s..end];
         Ok(output)
     }
 
@@ -398,7 +386,7 @@ pub(crate) fn num_bits(mydata: &[u32]) -> u8{
     bits
 }
 
-pub fn delta_num_bits(mydata: &[i32]) -> (i32, u8,Vec<u32>){
+pub(crate) fn delta_num_bits(mydata: &[i32]) -> (i32, u8,Vec<u32>){
     // info!("10th vec: {},{},{},{}", mydata[0],mydata[1],mydata[2],mydata[3]);
     let mut vec = Vec::new();
     let mut xor:u32 = 0;
@@ -440,7 +428,7 @@ pub fn unzigzag(origin: u32) -> i32{
 }
 
 // delta calculation for sprintz
-pub fn zigzag_delta_num_bits(mydata: &[i32]) -> (i32, u8,Vec<u32>){
+pub(crate) fn zigzag_delta_num_bits(mydata: &[i32]) -> (i32, u8,Vec<u32>){
     info!("10th vec: {},{},{},{}", mydata[0],mydata[1],mydata[2],mydata[3]);
     let mut vec = Vec::new();
     let mut xor:u32 = 0;
@@ -838,25 +826,6 @@ fn test_xor_f64() {
         pre = cur;
 
     }
-}
-
-
-#[test]
-fn run_gorilla_example_buff() {
-    let file_vec =  [0.66f64,1.41,1.41,1.50,2.72,3.14];
-
-    let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.to_vec(),None,None);
-    let comp = GorillaCompress::new(10,10);
-    let start = Instant::now();
-    let compressed = comp.encode(&mut seg);
-    let duration = start.elapsed();
-    println!("Time elapsed in {:?} gorilla compress function() is: {:?}",comp.type_id(), duration);
-
-    let start1 = Instant::now();
-    let decomp = comp.decode(compressed);
-    let duration1 = start1.elapsed();
-    println!("decompressed vec:{:?}", decomp);
-    println!("Time elapsed in {:?} decompress function() is: {:?}",comp.type_id(), duration1);
 }
 
 #[test]

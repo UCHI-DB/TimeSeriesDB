@@ -9,7 +9,7 @@ extern crate bitpacking;
 use bitpacking::{BitPacker4x, BitPacker};
 use std::vec::Vec;
 use croaring::Bitmap;
-use tsz::{DataPoint,StdEncoder, StdDecoder};
+use tsz::{DataPoint, Encode, Decode, StdEncoder, StdDecoder};
 use tsz::stream::{BufferedReader, BufferedWriter};
 use tsz::decode::Error;
 use flate2::read::GzDecoder;
@@ -24,14 +24,13 @@ use self::flate2::write::DeflateEncoder;
 use parity_snappy as snappy;
 use parity_snappy::{compress, decompress};
 use std::time::{SystemTime, Instant};
-use crate::client::{construct_file_client_skip_newline, construct_file_iterator_skip_newline, construct_file_iterator_int, construct_file_iterator_int_signed, read_dict};
+use crate::client::{construct_file_client_skip_newline, construct_file_iterator_skip_newline, construct_file_iterator_int, construct_file_iterator_int_signed};
 use crate::methods::Methods::Fourier;
 use self::bitpacking::BitPacker1x;
 use crate::methods::bit_packing::{BP_encoder, deltaBP_encoder, delta_offset, delta_num_bits, split_double_encoder, BitPack, bp_double_encoder, sprintz_double_encoder, unzigzag, BYTE_BITS};
 use std::str::FromStr;
-use num::{FromPrimitive, Num, Float};
+use num::{FromPrimitive, Num};
 use rustfft::FFTnum;
-use crate::methods::fcm_encoder::FCMCompressor;
 use std::hash::Hash;
 use std::borrow::Borrow;
 use crate::methods::prec_double::{PrecisionBound, FIRST_ONE, get_precision_bound};
@@ -39,17 +38,10 @@ use crate::methods::gorilla_encoder::{GorillaEncoder, SepEncode};
 use crate::methods::gorilla_decoder::{GorillaDecoder, SepDecode};
 use std::any::Any;
 use std::collections::HashMap;
+use rustfft::num_traits::real::Real;
 use crate::compress::split_double::SplitBDDoubleCompress;
 use crate::compress::sprintz::SprintzDoubleCompress;
 use crate::compress::gorilla::{GorillaBDCompress, GorillaCompress};
-use crate::knn::{grail_file, get_gamma};
-use std::path::Path;
-use std::fmt::Debug;
-use ndarray_linalg::{Scalar, Lapack};
-use crate::compress::PRECISION_MAP;
-use self::tsz::{Encode, Decode};
-use std::slice::Iter;
-use my_bit_vec::BitVec;
 
 pub const TYPE_LEN:usize = 8usize;
 pub const SCALE: f64 = 1.0f64;
@@ -58,6 +50,26 @@ pub const PRECISION:i32 = 100000;
 pub const PREC_DELTA:f64 = 0.000005f64;
 // pub const TEST_FILE:&str = "../taxi/dropoff_latitude-fulltaxi-1k.csv";
 pub const TEST_FILE:&str = "../UCRArchive2018/Kernel/randomwalkdatasample1k-40k";
+
+
+lazy_static! {
+    static ref PRECISION_MAP: HashMap<i32, i32> =[(1, 5),
+        (2, 8),
+        (3, 11),
+        (4, 15),
+        (5, 18),
+        (6, 21),
+        (7, 25),
+        (8, 28),
+        (9, 31),
+        (10, 35),
+        (11, 38),
+        (12, 50),
+        (13, 10),
+        (14, 10),
+        (15, 10)]
+        .iter().cloned().collect();
+}
 
 
 pub trait CompressionMethod<T> {
@@ -70,100 +82,6 @@ pub trait CompressionMethod<T> {
     fn run_compress<'a>(&self, segs: &mut Vec<Segment<T>>);
 
 	fn run_decompress(&self, segs: &mut Vec<Segment<T>>);
-}
-
-#[derive(Clone)]
-pub struct FCMCompress {
-    chunksize: usize,
-    batchsize: usize
-}
-
-impl FCMCompress {
-    pub fn new(chunksize: usize, batchsize: usize) -> Self {
-        FCMCompress { chunksize, batchsize }
-    }
-
-    fn encode<T> (&self, seg: &mut Segment<T>)
-        where T: Clone + Eq + Hash +Copy + Num + Into<i32>{
-        let mut fcm = FCMCompressor::new(seg.get_data().to_vec(), 3, false);
-        fcm.delta_compress();
-    }
-
-    fn decode_reader(bytes: Vec<u8>) -> io::Result<String> {
-        unimplemented!()
-    }
-}
-
-impl<T> CompressionMethod<T> for FCMCompress
-    where T:Clone+Eq +Hash+Copy+Num+Into<i32>{
-    fn get_segments(&self) {
-        unimplemented!()
-    }
-
-    fn get_batch(&self) -> usize {
-        self.batchsize
-    }
-
-    fn run_compress(&self, segs: &mut Vec<Segment<T>>) {
-        let start = Instant::now();
-        for seg in segs {
-            self.encode(seg);
-        }
-
-        let duration = start.elapsed();
-//        println!("Time elapsed in BP function() is: {:?}", duration);
-    }
-
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
-        unimplemented!()
-    }
-}
-
-#[derive(Clone)]
-pub struct DFCMCompress {
-    chunksize: usize,
-    batchsize: usize
-}
-
-impl DFCMCompress {
-    pub fn new(chunksize: usize, batchsize: usize) -> Self {
-        DFCMCompress { chunksize, batchsize }
-    }
-
-    fn encode<T> (&self, seg: &mut Segment<T>)
-        where T: Clone + Eq + Hash +Copy + Num + Into<i32>{
-        let mut fcm = FCMCompressor::new(seg.get_data().to_vec(), 3, true);
-        fcm.delta_compress();
-    }
-
-    fn decode_reader(bytes: Vec<u8>) -> io::Result<String> {
-        unimplemented!()
-    }
-}
-
-impl<T> CompressionMethod<T> for DFCMCompress
-    where T:Clone+Eq +Hash+Copy+Num+Into<i32>{
-    fn get_segments(&self) {
-        unimplemented!()
-    }
-
-    fn get_batch(&self) -> usize {
-        self.batchsize
-    }
-
-    fn run_compress(&self, segs: &mut Vec<Segment<T>>) {
-        let start = Instant::now();
-        for seg in segs {
-            self.encode(seg);
-        }
-
-        let duration = start.elapsed();
-//        println!("Time elapsed in BP function() is: {:?}", duration);
-    }
-
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
-        unimplemented!()
-    }
 }
 
 #[derive(Clone)]
@@ -332,48 +250,6 @@ impl GZipCompress {
         expected_datapoints
     }
 
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
-        let mut gz = GzDecoder::new(&bytes[..]);
-        let mut s:Vec<u8> = Vec::new();
-        let ct= gz.read_to_end(&mut s).unwrap();
-        let mut expected_datapoints:Vec<f64> = Vec::new();
-        info!("size read:{}, original size:{}", ct, s.len());
-        match Segment::convert_from_bytes(&s) {
-            Ok(new_seg) => {
-                let vals:Vec<f64> = new_seg.get_data().clone();
-                for &elem in cond{
-                    expected_datapoints.push(*vals.get(elem).unwrap());
-                }
-            },
-            _           => panic!("Failed to convert bytes into segment"),
-        }
-        println!("Number of scan items:{}", expected_datapoints.len());
-        expected_datapoints
-    }
-
-
-    pub(crate) fn range_filter_condition(&self, bytes: Vec<u8>, pred:f64, iter: Iter<usize>, len:usize) -> BitVec<u32> {
-        let mut gz = GzDecoder::new(&bytes[..]);
-        let mut s:Vec<u8> = Vec::new();
-        let ct= gz.read_to_end(&mut s).unwrap();
-        let mut res = BitVec::from_elem(len, false);
-        info!("size read:{}, original size:{}", ct, s.len());
-        match Segment::convert_from_bytes(&s) {
-            Ok(new_seg) => {
-                let vals:Vec<f64> = new_seg.get_data().clone();
-                for &elem in iter{
-                    if *vals.get(elem).unwrap()>pred{
-                        res.set(elem,true);
-                    }
-                }
-            },
-            _           => panic!("Failed to convert bytes into segment"),
-        }
-        println!("Number of qualified items:{}", res.cardinality());
-        return res;
-    }
-
-
 
     pub(crate) fn sum(&self, bytes: Vec<u8>) -> f64 {
         let mut gz = GzDecoder::new(&bytes[..]);
@@ -462,52 +338,6 @@ impl GZipCompress {
         // res.run_optimize();
         println!("Max: {}", max);
         println!("Number of qualified items for max:{}", res.cardinality());
-    }
-
-
-    pub(crate) fn max_range(&self, bytes: Vec<u8>,st:u32, ed:u32, window:u32){
-        let mut gz = GzDecoder::new(&bytes[..]);
-        let mut s:Vec<u8> = Vec::new();
-        let ct= gz.read_to_end(&mut s).unwrap();
-        info!("size read:{}, original size:{}", ct, s.len());
-        let mut res = Bitmap::create();
-        let mut i = 0;
-        let mut max =  std::f64::MIN;
-        let mut cur_s = st;
-        let mut max_vec = Vec::new();
-
-        match Segment::convert_from_bytes(&s) {
-            Ok(new_seg) => {
-                for e in new_seg.get_data() as &Vec<f64>
-                {
-                    if i<st {
-                        i+=1;
-                        continue;
-                    }else if i>=ed {
-                        break;
-                    }
-                    if i==cur_s+window{
-                        max_vec.push(max);
-                        // println!("{}",max);
-                        max =std::f64::MIN;
-                        cur_s=i;
-                    }
-
-                    if (*e )>max{
-                        max = *e;
-                        res.remove_range(cur_s as u64 .. i as u64);
-                        res.add(i);
-                    }else if (*e )==max {
-                        res.add(i);
-                    }
-                    i+=1;
-                }
-            },
-            _           => panic!("Failed to convert bytes into segment"),
-        }
-        max_vec.push(max);
-        println!("Max: {}",max_vec.len());
-        // println!("Number of qualified items for max_groupby:{}", res.cardinality());
     }
 }
 
@@ -710,65 +540,6 @@ impl SnappyCompress {
         expected_datapoints
     }
 
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
-        let mut snappy = decompress(bytes.as_slice());
-        let mut s = snappy.unwrap();
-        let mut iter = cond.clone();
-        let mut it =iter.next();
-        let mut point = *it.unwrap();
-        let mut expected_datapoints:Vec<f64> = Vec::new();
-        let mut i = 0;
-        match Segment::convert_from_bytes(&s) {
-            Ok(new_seg) => {
-                for e in new_seg.get_data() as &Vec<f64>
-                {
-                    if i==point{
-                        expected_datapoints.push(*e);
-                        it =iter.next();
-                        if it==None{
-                            break;
-                        }
-                        point = *it.unwrap();
-                    }
-                    i += 1;
-                }
-            },
-            _           => panic!("Failed to convert bytes into segment"),
-        }
-        //println!("Number of scan items:{}", expected_datapoints.len());
-        expected_datapoints
-    }
-
-    pub(crate) fn range_filter_condition(&self, bytes: Vec<u8>, pred:f64, mut iter: Iter<usize>, len:usize) -> BitVec<u32> {
-        let mut snappy = decompress(bytes.as_slice());
-        let mut s = snappy.unwrap();
-        let mut it =iter.next();
-        let mut point = *it.unwrap();
-        let mut res = BitVec::from_elem(len, false);
-        let mut i = 0;
-        match Segment::convert_from_bytes(&s) {
-            Ok(new_seg) => {
-                for e in new_seg.get_data() as &Vec<f64>
-                {
-                    if i==point{
-                        if *e>pred{
-                            res.set(i,true);
-                        }
-                        it =iter.next();
-                        if it==None{
-                            break;
-                        }
-                        point = *it.unwrap();
-                    }
-                    i += 1;
-                }
-            },
-            _           => panic!("Failed to convert bytes into segment"),
-        }
-        println!("Number of qualified items:{}", res.cardinality());
-        return res;
-    }
-
     pub(crate) fn sum(&self, bytes: Vec<u8>) -> f64 {
         let mut snappy = decompress(bytes.as_slice());
         let mut s = snappy.unwrap();
@@ -855,51 +626,6 @@ impl SnappyCompress {
         // res.run_optimize();
         println!("Max: {}",max);
         println!("Number of qualified items for max:{}", res.cardinality());
-    }
-
-    pub(crate) fn max_range(&self, bytes: Vec<u8>,st:u32, ed:u32, window:u32)  {
-        let mut snappy = decompress(bytes.as_slice());
-        let mut s = snappy.unwrap();
-        let mut res = Bitmap::create();
-        let mut i = 0;
-        let mut max = std::f64::MIN;
-        let mut cur_s = st;
-        let mut max_vec = Vec::new();
-
-        match Segment::convert_from_bytes(&s) {
-            Ok(new_seg) => {
-                for e in new_seg.get_data() as &Vec<f64>
-                {
-                    if i<st {
-                        i+=1;
-                        continue;
-                    }else if i>=ed {
-                        break;
-                    }
-                    if i==cur_s+window{
-                        max_vec.push(max);
-                        // println!("{}",max);
-                        max =std::f64::MIN;
-                        cur_s=i;
-                    }
-
-                    if (*e )>max{
-                        max = *e;
-                        res.remove_range(cur_s as u64 .. i as u64);
-                        res.add(i);
-                    }
-                    else if (*e )==max {
-                        res.add(i);
-                    }
-                    i+=1;
-                }
-            },
-            _           => panic!("Failed to convert bytes into segment"),
-        }
-        // res.run_optimize();
-        max_vec.push(max);
-        println!("Max: {}",max_vec.len());
-        // println!("Number of qualified items for max_groupby:{}", res.cardinality());
     }
 }
 
@@ -1511,7 +1237,6 @@ pub fn test_paa_compress_on_int_file(file:&str,scl:i32){
     println!("{},    {}", 1.0/window as f32, throughput);
 }
 
-// parse file into vector and apply fft on whole vector
 pub fn test_fourier_compress_on_file<'a,T>(file:&str)
     where T: FromStr + Clone + FFTnum +Serialize+ Deserialize<'a>{
     let file_iter = construct_file_iterator_skip_newline::<T>(file, 1, ',');
@@ -1522,67 +1247,6 @@ pub fn test_fourier_compress_on_file<'a,T>(file:&str)
     let compressed = fourier_compress(&mut seg);
     let duration = start.elapsed();
     info!("Time elapsed in Fourier compress function() is: {:?}", duration);
-    //let decompress = comp.decode(compressed);
-    //println!("expected datapoints: {:?}", decompress);
-    let org_size = file_vec.len() * mem::size_of::<T>();
-    let throughput = 1000000000.0 * org_size as f64 / duration.as_nanos() as f64 / 1024.0/1024.0;
-    println!("1,    {}", throughput);
-}
-
-pub fn test_fourier_compress_on_file_per_line<'a,T>(file:&str)
-    where T: FromStr + Clone + FFTnum +Serialize+ Deserialize<'a>{
-    let file_iter = construct_file_iterator_skip_newline::<T>(file, 1, ',');
-    let file_vec: Vec<T> = file_iter.unwrap().collect();
-    let start = Instant::now();
-    let comp = FourierCompress::new(10,10);
-    let comp = FourierCompress::new(10,10);
-    for chunk in file_vec.chunks(999) {
-        let mut seg = Segment::new(None,SystemTime::now(),0,chunk.to_vec(),None,None);
-        let compressed = fourier_compress(&mut seg);
-    }
-
-    let duration = start.elapsed();
-    info!("Time elapsed in Fourier compress function() is: {:?}", duration);
-    //let decompress = comp.decode(compressed);
-    //println!("expected datapoints: {:?}", decompress);
-    let org_size = file_vec.len() * mem::size_of::<T>();
-    let throughput = 1000000000.0 * org_size as f64 / duration.as_nanos() as f64 / 1024.0/1024.0;
-    println!("1,    {}", throughput);
-}
-
-pub fn test_grail_compress_on_file<'a,T>(file:&str)
-    where T: FromStr + Clone + FFTnum +Serialize+ Debug + Float  +Scalar + Lapack {
-
-    let file_iter = construct_file_iterator_skip_newline::<T>(file, 1, ',');
-    let mut file_vec: Vec<T> = file_iter.unwrap().collect();
-
-    let train_name = "randomwalkdatasample1k-40k";
-    let gm=get_gamma(&Path::new("../database/script/data/gamma_ucr_new.csv"));
-    if !(gm.contains_key(train_name)){
-        return;
-    }
-    let gamma= *gm.get(train_name).unwrap() as usize;
-    // println!("dataset: {} with gamma: {}",train_name,gamma);
-
-    let dict_file = "../UCRArchive2018/Kernel/cbf-dict-999.tsv";
-
-    let dic = read_dict::<T>(dict_file,',');
-    println!("dictionary shape: {} * {}", dic.rows(), dic.cols());
-    let batch = dic.rows();
-    let len = dic.cols();
-    let num = batch*len;
-
-
-    let mut grail = Kernel::new(dic,gamma,usize::max_value(),batch);
-    let start = Instant::now();
-    grail.dict_pre_process_v0();
-
-    for chunk in file_vec.chunks_mut(num) {
-        let mut cur_batch = Array2::from_shape_vec((batch,len),mem::replace(&mut chunk.to_vec(), Vec::with_capacity(num))).unwrap();
-        grail.run_v0(cur_batch);
-    }
-    let duration = start.elapsed();
-    info!("Time elapsed in Grail compress function() is: {:?}", duration);
     //let decompress = comp.decode(compressed);
     //println!("expected datapoints: {:?}", decompress);
     let org_size = file_vec.len() * mem::size_of::<T>();
@@ -1959,39 +1623,7 @@ pub fn test_deltaBP_compress_on_int(file:&str,scl:i32) {
     println!(",    {}", throughput);
 }
 
-pub fn test_DFCM_compress_on_int(file:&str,scl:i32) {
-    let file_iter = construct_file_iterator_int_signed(file, 1, ',',scl);
-    let file_vec: Vec<i32> = file_iter.unwrap().collect();
 
-    //println!("integer vector: {:?}", file_vec);
-    info!("integer vector size: {}", file_vec.len());
-    let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);
-    let start = Instant::now();
-    let comp = DFCMCompress::new(10,10);
-    let compressed = comp.encode(&mut seg);
-    let duration = start.elapsed();
-    info!("Time elapsed in DFCM compress function() is: {:?}", duration);
-    let org_size = file_vec.len()*4;
-    let throughput = 1000000000.0 * org_size as f64 / duration.as_nanos() as f64 / 1024.0/1024.0;
-    println!(",    {}", throughput);
-}
-
-pub fn test_FCM_compress_on_int(file:&str,scl:i32) {
-    let file_iter = construct_file_iterator_int_signed(file, 1, ',',scl);
-    let file_vec: Vec<i32> = file_iter.unwrap().collect();
-
-    //println!("integer vector: {:?}", file_vec);
-    info!("integer vector size: {}", file_vec.len());
-    let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);
-    let start = Instant::now();
-    let comp = FCMCompress::new(10,10);
-    let compressed = comp.encode(&mut seg);
-    let duration = start.elapsed();
-    info!("Time elapsed in FCM compress function() is: {:?}", duration);
-    let org_size = file_vec.len()*4;
-    let throughput = 1000000000.0 * org_size as f64 / duration.as_nanos() as f64 / 1024.0/1024.0;
-    println!(",    {}", throughput);
-}
 
 
 #[test]

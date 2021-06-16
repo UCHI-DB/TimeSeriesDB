@@ -2,15 +2,12 @@ pub mod split_double;
 pub mod sprintz;
 pub mod gorilla;
 pub mod btr_array;
-pub mod buff_simd;
-pub mod buff_slice;
-pub mod scaled_slice;
 
 use std::{env, fs};
 use crate::client::construct_file_iterator_skip_newline;
 use crate::methods::compress::{SCALE, SplitDoubleCompress, test_split_compress_on_file, BPDoubleCompress, test_BP_double_compress_on_file, test_sprintz_double_compress_on_file, test_splitbd_compress_on_file, test_grillabd_compress_on_file, test_grilla_compress_on_file, GZipCompress, SnappyCompress, PRED, TEST_FILE};
 use std::time::{SystemTime, Instant};
-use crate::segment::{Segment, FourierCompress, PAACompress};
+use crate::segment::Segment;
 use std::path::Path;
 use std::rc::Rc;
 use parquet::file::properties::WriterProperties;
@@ -19,8 +16,7 @@ use parquet::basic::{Encoding, Compression};
 use crate::methods::parquet::{DICTPAGE_LIM, USE_DICT};
 use parquet::file::writer::{SerializedFileWriter, FileWriter};
 use parquet::column::writer::ColumnWriter;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::File;
 use croaring::Bitmap;
 use parquet::file::reader::{SerializedFileReader, FileReader};
 use parquet::record::RowAccessor;
@@ -34,7 +30,7 @@ use core::mem;
 use crate::methods::prec_double::{PrecisionBound, get_precision_bound};
 
 lazy_static! {
-    pub static ref PRECISION_MAP: HashMap<i32, i32> =[(1, 5),
+    static ref PRECISION_MAP: HashMap<i32, i32> =[(1, 5),
         (2, 8),
         (3, 11),
         (4, 15),
@@ -54,7 +50,7 @@ lazy_static! {
 
 
 lazy_static! {
-    pub static ref FILE_MIN_MAX: HashMap<&'static str, (i64,i64)> =[("/home/cc/TimeSeriesDB/UCRArchive2018/Kernel/randomwalkdatasample1k-40k", (-166032i64,415662i64)),
+    static ref FILE_MIN_MAX: HashMap<&'static str, (i64,i64)> =[("/home/cc/TimeSeriesDB/UCRArchive2018/Kernel/randomwalkdatasample1k-40k", (-166032i64,415662i64)),
         ("/home/cc/TimeSeriesDB/taxi/dropoff_latitude-fulltaxi-1k.csv", (67193104i64,134089487i64)),
         ("/home/cc/float_comp/signal/time_series_120rpm-c8-supply-voltage.csv", (9544233i64,9721774i64)),
         ("/home/cc/float_comp/signal/time_series_120rpm-c2-current.csv", (-78188537i64,80072697i64)),
@@ -63,10 +59,7 @@ lazy_static! {
         ("/home/cc/float_comp/signal/Stocks-c1-open.csv", (0i64,245760000i64)),
         ("/home/cc/TimeSeriesDB/UCRArchive2018/Kernel/UCR-all.csv", (-4317773i64,15728640i64)),
         ("/home/cc/float_comp/signal/gas-array-all-c2-Humidity.txt", (4183i64, 21455i64)),
-        ("/home/cc/float_comp/signal/city_temperature_c8.csv", (-3168i64,3520i64)),
-        ("/home/cc/float_comp/signal/Household_power_consumption_c3_voltage.csv", (57139i64,65062i64)),
-        ("/home/cc/float_comp/signal/Household_power_consumption_c4_global_intensity.csv", (6i64,1548i64))]
-
+        ("/home/cc/float_comp/signal/city_temperature_c8.csv", (-3168i64,3520i64))]
         .iter().cloned().collect();
 }
 
@@ -987,6 +980,8 @@ pub fn run_parquet_write_filter(test_file:&str, scl:usize,pred: f64, enc:&str){
              1000000000.0 * org_size as f64 / duration5.as_nanos() as f64 / 1024.0/1024.0
     )
 }
+
+
 
 #[test]
 fn test_given_min_max() {

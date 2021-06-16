@@ -10,8 +10,6 @@ use tsz::decode::Error;
 use croaring::Bitmap;
 use crate::methods::compress::CompressionMethod;
 use crate::methods::prec_double::{get_precision_bound, PrecisionBound};
-use std::slice::Iter;
-use my_bit_vec::BitVec;
 
 #[derive(Clone)]
 pub struct GorillaCompress {
@@ -76,49 +74,6 @@ impl GorillaCompress {
                     // }
                     // i += 1;
                     expected_datapoints.push(dp);
-                },
-                Err(err) => {
-                    if err == Error::EndOfStream {
-                        done = true;
-                    } else {
-                        panic!("Received an error from decoder: {:?}", err);
-                    }
-                }
-            };
-        }
-        println!("Number of scan items:{}", expected_datapoints.len());
-        expected_datapoints
-    }
-
-
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>, cond:Iter<usize>) -> Vec<f64> {
-        let r = BufferedReader::new(bytes.into_boxed_slice());
-        let mut decoder = GorillaDecoder::new(r);
-        let mut iter = cond.clone();
-        let mut it =iter.next();
-        let mut point = *it.unwrap();
-        let mut expected_datapoints:Vec<f64> = Vec::new();
-        let mut i = 0;
-        let mut done = false;
-        loop {
-            if done {
-                break;
-            }
-
-            match decoder.next_val() {
-                Ok(dp) => {
-                    // if i<10 {
-                    //     println!("{}",dp);
-                    // }
-                    if i==point{
-                        expected_datapoints.push(dp);
-                        it=iter.next();
-                        if it==None{
-                            break;
-                        }
-                        point = *it.unwrap();
-                    }
-                    i += 1;
                 },
                 Err(err) => {
                     if err == Error::EndOfStream {
@@ -202,49 +157,6 @@ impl GorillaCompress {
         println!("Number of qualified items:{}", res.cardinality());
     }
 
-    pub(crate) fn range_filter_condition(&self, bytes: Vec<u8>, pred:f64, mut iter: Iter<usize>, len:usize) -> BitVec<u32> {
-        let r = BufferedReader::new(bytes.into_boxed_slice());
-        let mut decoder = GorillaDecoder::new(r);
-        let mut it =iter.next();
-        let mut point = *it.unwrap();
-        let mut res = BitVec::from_elem(len, false);
-        let mut i = 0;
-        let mut done = false;
-        loop {
-            if done {
-                break;
-            }
-
-            match decoder.next_val() {
-                Ok(dp) => {
-                    // if i<10 {
-                    //     println!("{}",dp);
-                    // }
-                    if i==point{
-                        if dp>pred{
-                            res.set(i,true);
-                        }
-                        it=iter.next();
-                        if it==None{
-                            break;
-                        }
-                        point = *it.unwrap();
-                    }
-                    i += 1;
-                },
-                Err(err) => {
-                    if err == Error::EndOfStream {
-                        done = true;
-                    } else {
-                        panic!("Received an error from decoder: {:?}", err);
-                    }
-                }
-            };
-        }
-        println!("Number of qualified items:{}", res.cardinality());
-        return res;
-    }
-
     pub(crate) fn equal_filter(&self, bytes: Vec<u8>,pred:f64) {
         let r = BufferedReader::new(bytes.into_boxed_slice());
         let mut decoder = GorillaDecoder::new(r);
@@ -321,61 +233,6 @@ impl GorillaCompress {
         }
         println!("Max: {}",max);
         println!("Number of qualified items for max:{}", res.cardinality());
-    }
-
-
-    pub(crate) fn max_range(&self, bytes: Vec<u8>,s:u32, e:u32, window:u32)  {
-        let r = BufferedReader::new(bytes.into_boxed_slice());
-        let mut decoder = GorillaDecoder::new(r);
-        let mut max =std::f64::MIN;
-        let mut max_vec = Vec::new();
-
-        let mut done = false;
-        let mut i=0;
-        let mut res = Bitmap::create();
-        let mut cur_s = s;
-        loop {
-            if done {
-                break;
-            }
-
-            match decoder.next_val() {
-                Ok(dp) => {
-                    if i<s {
-                        i+=1;
-                        continue;
-                    }else if i>=e {
-                        break;
-                    }
-                    if i==cur_s+window{
-                        max_vec.push(max);
-                        // println!("{}",max);
-                        max =std::f64::MIN;
-                        cur_s=i;
-                    }
-
-                    if dp>max {
-                        max = dp;
-                        res.remove_range(cur_s as u64 .. i as u64);
-                        res.add(i);
-                    }
-                    else if dp==max {
-                        res.add(i);
-                    }
-                    i+=1;
-                },
-                Err(err) => {
-                    if err == Error::EndOfStream {
-                        done = true;
-                    } else {
-                        panic!("Received an error from decoder: {:?}", err);
-                    }
-                }
-            };
-        }
-        max_vec.push(max);
-        println!("Max: {}",max_vec.len());
-        // println!("Number of qualified items for max:{}", res.cardinality());
     }
 
 }
@@ -486,86 +343,6 @@ impl GorillaBDCompress {
         }
         println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
-    }
-
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
-        let r = BufferedReader::new(bytes.into_boxed_slice());
-        let mut decoder = GorillaDecoder::new(r);
-        let mut iter = cond.clone();
-        let mut it = iter.next();
-        let mut point = *it.unwrap();
-        let mut expected_datapoints:Vec<f64> = Vec::new();
-        let mut i = 0;
-        let mut done = false;
-        loop {
-            if done {
-                break;
-            }
-
-            match decoder.next_val() {
-                Ok(dp) => {
-                    if i==point{
-                        expected_datapoints.push(dp);
-                        it = iter.next();
-                        if it==None{
-                            break;
-                        }
-                        point = *it.unwrap();
-                    }
-                    i += 1;
-                },
-                Err(err) => {
-                    if err == Error::EndOfStream {
-                        done = true;
-                    } else {
-                        panic!("Received an error from decoder: {:?}", err);
-                    }
-                }
-            };
-        }
-        println!("Number of scan items:{}", expected_datapoints.len());
-        expected_datapoints
-    }
-
-    pub(crate) fn range_filter_condition(&self, bytes: Vec<u8>, pred:f64, mut iter: Iter<usize>, len:usize) -> BitVec<u32> {
-        let r = BufferedReader::new(bytes.into_boxed_slice());
-        let mut decoder = GorillaDecoder::new(r);
-        let mut it = iter.next();
-        let mut point = *it.unwrap();
-        let mut expected_datapoints:Vec<f64> = Vec::new();
-        let mut res = BitVec::from_elem(len, false);
-        let mut i = 0;
-        let mut done = false;
-        loop {
-            if done {
-                break;
-            }
-
-            match decoder.next_val() {
-                Ok(dp) => {
-                    if i==point{
-                        if dp>pred{
-                            res.set(i,true);
-                        }
-                        it = iter.next();
-                        if it==None{
-                            break;
-                        }
-                        point = *it.unwrap();
-                    }
-                    i += 1;
-                },
-                Err(err) => {
-                    if err == Error::EndOfStream {
-                        done = true;
-                    } else {
-                        panic!("Received an error from decoder: {:?}", err);
-                    }
-                }
-            };
-        }
-        println!("Number of qualified items:{}", res.cardinality());
-        return res;
     }
 
 
@@ -719,62 +496,6 @@ impl GorillaBDCompress {
         // res.run_optimize();
         println!("Max: {}",max);
         println!("Number of qualified items for max:{}", res.cardinality());
-
-    }
-
-
-    pub(crate) fn max_range(&self, bytes: Vec<u8>,s:u32, e:u32, window:u32) {
-        let r = BufferedReader::new(bytes.into_boxed_slice());
-        let mut decoder = GorillaDecoder::new(r);
-
-        let mut max = std::f64::MIN;
-        let mut max_vec = Vec::new();
-
-        let mut done = false;
-        let mut i=0;
-        let mut isqualify = true;
-        let mut res = Bitmap::create();
-        let mut cur_s = s;
-        loop {
-            if done {
-                break;
-            }
-
-            match decoder.next_val() {
-                Ok(dp) => {
-                    if i<s {
-                        i+=1;
-                        continue;
-                    }else if i>=e {
-                        break;
-                    }
-                    if i==cur_s+window{
-                        max_vec.push(max);
-                        // println!("{}",max);
-                        max =std::f64::MIN;
-                        cur_s=i;
-                    }
-                    if dp>max {
-                        max = dp;
-                        res.remove_range(cur_s as u64 .. i as u64);
-                        res.add(i);
-                    }else if dp==max {
-                        res.add(i);
-                    }
-                    i+=1;
-                },
-                Err(err) => {
-                    if err == Error::EndOfStream {
-                        done = true;
-                    } else {
-                        panic!("Received an error from decoder: {:?}", err);
-                    }
-                }
-            };
-        }
-        max_vec.push(max);
-        println!("Max: {}",max_vec.len());
-        // println!("Number of qualified items for max_groupby:{}", res.cardinality());
 
     }
 }
