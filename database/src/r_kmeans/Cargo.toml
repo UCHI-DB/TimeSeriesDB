@@ -1,0 +1,15 @@
+[package]
+name = "r_kmeans"
+version = "0.1.0"
+authors = ["chunwei <tranway@qq.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+smartcore = { path = "../../../smartcore" }
+time_series_start = { path = "../../../database" }
+ndarray = "0.12.1"
+isolation_forest = "1.1.0"
+rand = "0.8.4"
+csv = "1.1.6"

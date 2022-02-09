@@ -67,6 +67,25 @@ pub fn gen_u8_with_outlier(ratio:f64, size: u64) -> Result<Vec<u8>, usize>{
 
 }
 
+pub fn gen_vector_indices(ratio:f64, size: usize) -> Result<Vec<usize>, usize>{
+    let threshold = (size as f64 * ratio) as usize;
+
+    let mut vec = Vec::new();
+    let mut rng = rand::thread_rng();
+    let unif = Uniform::from(0..size);
+    let mut ran = unif.sample(&mut rng);
+
+    for i in 0..size {
+        ran = unif.sample(&mut rng);
+        if ran < threshold {
+            vec.push(i);
+        }
+    }
+    println!("generating vector size: {} from {} with ratio {}",vec.len(), size, ratio);
+    Ok(vec)
+
+}
+
 
 pub fn outlier_byte_majority_encoding_decoding(vec_u8:Vec<u8>, size:u64, ratio:f64, scl:usize,pred: f64) {
 

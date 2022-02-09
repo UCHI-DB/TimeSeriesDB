@@ -294,7 +294,7 @@ impl GZipCompress {
     }
 
     // Compress a sample string and print it after transformation.
-    pub(crate) fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
+    pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
         where T: Serialize + Deserialize<'a>{
         let mut e = GzEncoder::new(Vec::new(), Compression::best());
         let origin_bin =seg.convert_to_bytes().unwrap();
@@ -332,7 +332,7 @@ impl GZipCompress {
         expected_datapoints
     }
 
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
+    pub fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
         let mut gz = GzDecoder::new(&bytes[..]);
         let mut s:Vec<u8> = Vec::new();
         let ct= gz.read_to_end(&mut s).unwrap();
@@ -673,7 +673,7 @@ impl SnappyCompress {
     }
 
     // Compress a sample string and print it after transformation.
-    pub(crate) fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
+    pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
         where T: Serialize + Deserialize<'a>{
         let origin_bin =seg.convert_to_bytes().unwrap();
         info!("original size:{}", origin_bin.len());
@@ -710,7 +710,7 @@ impl SnappyCompress {
         expected_datapoints
     }
 
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
+    pub fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
         let mut snappy = decompress(bytes.as_slice());
         let mut s = snappy.unwrap();
         let mut iter = cond.clone();
@@ -1518,7 +1518,7 @@ pub fn test_fourier_compress_on_file<'a,T>(file:&str)
     let file_vec: Vec<T> = file_iter.unwrap().collect();
     let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);
     let start = Instant::now();
-    let comp = FourierCompress::new(10,10);
+    let comp = FourierCompress::new(10,10,1.0);
     let compressed = fourier_compress(&mut seg);
     let duration = start.elapsed();
     info!("Time elapsed in Fourier compress function() is: {:?}", duration);
@@ -1534,8 +1534,8 @@ pub fn test_fourier_compress_on_file_per_line<'a,T>(file:&str)
     let file_iter = construct_file_iterator_skip_newline::<T>(file, 1, ',');
     let file_vec: Vec<T> = file_iter.unwrap().collect();
     let start = Instant::now();
-    let comp = FourierCompress::new(10,10);
-    let comp = FourierCompress::new(10,10);
+    let comp = FourierCompress::new(10,10,1.0);
+    let comp = FourierCompress::new(10,10,1.0);
     for chunk in file_vec.chunks(999) {
         let mut seg = Segment::new(None,SystemTime::now(),0,chunk.to_vec(),None,None);
         let compressed = fourier_compress(&mut seg);

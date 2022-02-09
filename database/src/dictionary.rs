@@ -97,7 +97,7 @@ pub type DictionaryId = u32; /* Type alias for dictionary id */
 
 
 pub struct Dictionary<T> {
-	meta_data: u32, /* temp holder for metadata */
+	meta_data: u32, /* kmeans holder for metadata */
 	id: DictionaryId,
 	num_items: u32,
 	entry_size: u32, /* Indicates the size of each entry in items */ 

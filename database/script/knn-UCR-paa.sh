@@ -13,3 +13,4 @@ for file in $(ls /Users/chunwei/research/TimeSeriesDB/UCRArchive2018);
 	done
 echo "all done"
 			
+../UCRArchive2018/GunPoint/GunPoint_TEST

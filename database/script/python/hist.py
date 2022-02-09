@@ -3,7 +3,7 @@ matplotlib.use('Agg')
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
-
+matplotlib.rcParams['text.usetex'] = True
 
 onheap = []
 skip = []

@@ -25,7 +25,7 @@ impl GorillaCompress {
     }
 
     // Compress a sample string and print it after transformation.
-    pub(crate) fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
+    pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
         where T: Serialize + Clone+ Copy+Into<f64> + Deserialize<'a>{
 
         let w = BufferedWriter::new();
@@ -91,7 +91,7 @@ impl GorillaCompress {
     }
 
 
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>, cond:Iter<usize>) -> Vec<f64> {
+    pub fn decode_condition(&self, bytes: Vec<u8>, cond:Iter<usize>) -> Vec<f64> {
         let r = BufferedReader::new(bytes.into_boxed_slice());
         let mut decoder = GorillaDecoder::new(r);
         let mut iter = cond.clone();
@@ -417,7 +417,7 @@ impl GorillaBDCompress {
     }
 
     // Compress a sample string and print it after transformation.
-    pub(crate) fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
+    pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
         where T: Serialize + Clone+ Copy+Into<f64> + Deserialize<'a>{
 
         let w = BufferedWriter::new();
@@ -488,7 +488,7 @@ impl GorillaBDCompress {
         expected_datapoints
     }
 
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
+    pub fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64> {
         let r = BufferedReader::new(bytes.into_boxed_slice());
         let mut decoder = GorillaDecoder::new(r);
         let mut iter = cond.clone();

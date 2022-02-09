@@ -107,7 +107,7 @@ impl<T,U,F,G> BufferedSignal<T,U,F,G>
    			Like a hashmap from signal id to a method enum that should
    				be applied for that signal
    		5. Allow early return/way for user to kill a signal without 
-   			having the signal neeed to exhaust the stream
+   			having the signal need to exhaust the stream
  */
 impl<T,U,F,G> Future for BufferedSignal<T,U,F,G> 
 	where T: Copy + Send+ FFTnum+ Float+Lapack,
@@ -166,8 +166,8 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 						//todo: adjust logics here to fix kernel method.
 						// we should remove compression logic here.
 						if bsize<DEFAULT_BATCH_SIZE{
-							batch_vec.extend(&data);
-							bsize= bsize+1;
+							// batch_vec.extend(&data);
+							// bsize= bsize+1;
 						}
 						else {
 							bsize = 0;

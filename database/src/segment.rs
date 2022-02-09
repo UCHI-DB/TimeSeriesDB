@@ -29,6 +29,8 @@ use rand::rngs::{StdRng};
 use rand::distributions::{Normal, Distribution};
 use crate::methods::compress::CompressionMethod;
 use crate::knn::fft_ifft_ratio;
+use croaring::Bitmap;
+use itertools::Itertools;
 
 
 /* 
@@ -249,7 +251,9 @@ impl<T> Iterator for SegmentIter<T>
  * Note: This decision described below
  */
 impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
-	
+
+	///
+	/// deprecated function
 	pub fn fourier_compress(&self) -> Segment<Complex<T>> {
 		let size = self.data.len();
 		let mut planner = FFTplanner::new(false);
@@ -273,6 +277,39 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 		}
 
 	}
+
+	pub fn fourier_compress_budget(&self, ratio : f64) -> Segment<Complex<T>> {
+		let size = self.data.len();
+		let k = (size as f64 * ratio/2.0) as usize;
+		let mut planner = FFTplanner::new(false);
+		let fft = planner.plan_fft(size);
+
+		let mut input: Vec<Complex<T>> = self.data.iter()
+			.map(|x| Complex::new(*x,Zero::zero()))
+			.collect();
+
+		let mut output: Vec<Complex<T>> = vec![Complex::zero(); size];
+		fft.process(&mut input, &mut output);
+		if ratio!=1.0{
+			for (i, a) in output.iter_mut().enumerate(){
+				if i>=k && i<=size-k {
+					*a = Complex::zero();
+				}
+			}
+		}
+
+		// skip normalizing by sqr(size), will handle this in decompression step
+
+		Segment {
+			method: Some(Fourier),
+			timestamp: self.timestamp,
+			signal: self.signal,
+			data: output,
+			time_lapse: self.time_lapse.clone(),
+			prev_seg_offset: self.prev_seg_offset,
+		}
+
+	}
 }
 
 
@@ -283,7 +320,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
  * instead, and the ComplexDef coversion will be hidden behind 
  * calls to convert to and from bytes.
  */
-impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<Complex<T>> {
+impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 	
 	pub fn fourier_decompress(&self) -> Segment<T> {
 		let mut planner = FFTplanner::new(true);
@@ -295,6 +332,27 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<Complex<T>> {
 		fft.process(&mut self.data.clone(), &mut output);
 
 		let output = output.iter().map(|c| c.re).collect();
+
+		Segment {
+			method: None,
+			timestamp: self.timestamp,
+			signal: self.signal,
+			data: output,
+			time_lapse: self.time_lapse.clone(),
+			prev_seg_offset: self.prev_seg_offset,
+		}
+	}
+
+	pub fn fourier_decompress_f64(&self) -> Segment<f64> {
+		let mut planner = FFTplanner::new(true);
+		let size = self.data.len();
+		let fft = planner.plan_fft(size);
+
+		let mut output: Vec<Complex<T>> = vec![Complex::zero(); size];
+
+		fft.process(&mut self.data.clone(), &mut output);
+
+		let output = output.iter().map(|c| c.re.into()/size as f64).collect();
 
 		Segment {
 			method: None,
@@ -418,16 +476,92 @@ pub fn paa_compress<T>(seg: &mut Segment<T>, chunk_size: usize)
 	seg.data = paa_data	
 }
 
+// todo: restruct the code blocks into compression folder
 #[derive(Clone)]
 pub struct PAACompress {
 	chunksize: usize,
-	batchsize: usize
+	batchsize: usize,
 }
 
 impl PAACompress {
 	pub fn new(chunksize: usize, batchsize: usize) -> Self {
-		PAACompress { chunksize, batchsize }
+		PAACompress { chunksize, batchsize}
 	}
+
+	pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
+		where T: Serialize + Num + FromPrimitive + Clone+ Copy+Into<f64> + Deserialize<'a>{
+		paa_compress(seg,self.chunksize);
+		return seg.convert_to_bytes().unwrap();
+	}
+
+	pub fn decode<'a,T>(&self, bytes: &'a [u8]) -> Vec<f64>
+		where T: Serialize + Num + FromPrimitive + Clone+ Copy+Into<f64> + Deserialize<'a>{
+		let seg:Segment<T>  = Segment::convert_from_bytes(bytes).unwrap();
+		let vec = seg.get_data();
+		let vsize = vec.len();
+		let mut unpaa = Vec::new();
+		let mut paa_data = vec.iter();
+
+		let mut val:f64 = 0.0;
+		for i in 0..vsize as i32 {
+			val = (*(paa_data.next().unwrap())).into();
+			for j in 0..self.chunksize{
+				unpaa.push(val);
+			}
+
+		}
+		return unpaa;
+	}
+
+	pub(crate) fn max<'a,T>(&self, bytes: &'a [u8]) -> f64
+		where T: Serialize + Num + FromPrimitive + Clone+ Copy+Into<f64> + Deserialize<'a>{
+		let mut res = Bitmap::create();
+		let mut i = 0;
+		let mut max =  std::f64::MIN;
+
+		let seg:Segment<T>  = Segment::convert_from_bytes(bytes).unwrap();
+		let vec = seg.get_data();
+		let vsize = vec.len();
+		let mut paa_data = vec.iter();
+
+		let mut e:f64 = 0.0;
+		for outer in 0..vsize as i32 {
+			e = (*(paa_data.next().unwrap())).into();
+			for j in 0..self.chunksize{
+				if e>max{
+					max = e;
+					res.clear();
+					res.add(i);
+				}else if e ==max {
+					res.add(i);
+				}
+				i+=1;
+			}
+
+		}
+		println!("Max: {}",max);
+		println!("Number of qualified items for max:{}", res.cardinality());
+		return max;
+	}
+
+	pub(crate) fn sum<'a,T>(&self, bytes: &'a [u8]) -> f64
+		where T: Serialize + Num + FromPrimitive + Clone+ Copy+Into<f64> + Deserialize<'a>{
+		let mut sum =  0.0;
+
+		let seg:Segment<T>  = Segment::convert_from_bytes(&bytes).unwrap();
+		let vec = seg.get_data();
+		let vsize = vec.len();
+		let mut paa_data = vec.iter();
+
+		for outer in 0..vsize as i32 {
+			sum += (*(paa_data.next().unwrap())).into();
+
+		}
+		println!("sum is: {:?}",sum*self.chunksize as f64);
+		return sum*self.chunksize as f64;
+	}
+
+
 }
 
 impl<T> CompressionMethod<T> for PAACompress
@@ -462,12 +596,55 @@ pub fn fourier_compress<'a,T>(seg: &mut Segment<T>)
 #[derive(Clone)]
 pub struct FourierCompress {
 	chunksize: usize,
-	batchsize: usize
+	batchsize: usize,
+	ratio: f64
 }
 
 impl FourierCompress {
-	pub fn new(chunksize: usize, batchsize: usize) -> Self {
-		FourierCompress { chunksize, batchsize }
+	pub fn new(chunksize: usize, batchsize: usize, ratio:f64) -> Self {
+		FourierCompress { chunksize, batchsize, ratio}
+	}
+
+	pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
+		where T: Serialize + FFTnum+ Clone+ Copy+Into<f64> + Deserialize<'a>{
+		let res =  seg.fourier_compress_budget(self.ratio).convert_to_bytes().unwrap();
+		return res;
+	}
+
+	pub(crate) fn decode(&self,bytes: Vec<u8>) -> Vec<f64> {
+		let mut seg: Segment<Complex<f64>> = Segment::convert_from_bytes(&bytes).unwrap();
+		return seg.fourier_decompress_f64().get_data().to_vec();
+	}
+
+	pub(crate) fn max(&self, bytes: Vec<u8>) -> f64 {
+		let vec = self.decode(bytes);
+		let mut res = Bitmap::create();
+		let mut i = 0;
+		let mut max =  std::f64::MIN;
+		for e in vec
+		{
+			if e>max{
+				max = e;
+				res.clear();
+				res.add(i);
+			}else if e ==max {
+				res.add(i);
+			}
+			i+=1;
+		}
+		println!("Max: {}",max);
+		println!("Number of qualified items for max:{}", res.cardinality());
+		return max;
+	}
+
+	pub(crate) fn sum(&self, bytes: Vec<u8>) -> f64 {
+		let vec = self.decode(bytes);
+		let mut sum =  0.0;
+		for e in vec{
+			sum +=e;
+		}
+		println!("sum is: {:?}",sum );
+		return sum;
 	}
 }
 

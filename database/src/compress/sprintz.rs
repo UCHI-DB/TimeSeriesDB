@@ -20,7 +20,7 @@ impl SprintzDoubleCompress {
         SprintzDoubleCompress { chunksize, batchsize, scale }
     }
 
-    pub(crate) fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
+    pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
         where T: Serialize + Clone+ Copy+Into<f64> + Deserialize<'a>{
         let comp = sprintz_double_encoder(seg.get_data().as_slice(),self.scale);
         comp
@@ -57,7 +57,7 @@ impl SprintzDoubleCompress {
     }
 
 
-    pub(crate) fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64>{
+    pub fn decode_condition(&self, bytes: Vec<u8>,cond:Iter<usize>) -> Vec<f64>{
         let mut expected_datapoints:Vec<f64> = Vec::new();
         let scl = self.scale as f64;
         let mut bitpack = BitPack::<&[u8]>::new(bytes.as_slice());

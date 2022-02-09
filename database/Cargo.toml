@@ -24,6 +24,7 @@ path = "src/pscan/main.rs"
 name = "knn"
 path = "src/knn/main.rs"
 
+
 [[bin]]
 name = "predict"
 path = "src/predict/main.rs"
@@ -39,6 +40,11 @@ path = "src/outlier/main.rs"
 [[bin]]
 name = "bench"
 path = "src/benchmark/main.rs"
+
+[[bin]]
+name = "query"
+path = "src/query/main.rs"
+
 
 
 
@@ -63,6 +69,7 @@ nalgebra = "0.18.0"
 ndarray = "0.12.1"
 #ndarray-linalg = {version = "0.11"}
 flate2 = "1.0.11"
+cmake ="0.1.45"
 parity-snappy = ""
 #ndarray-linalg = { version = "0.11", features = ["openblas"] }
 #ndarray-linalg = { version = "0.11", features = ["netlib"] }

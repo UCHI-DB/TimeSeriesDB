@@ -485,6 +485,123 @@ pub fn run_fixed_encoding_decoding(test_file:&str, scl:usize,pred: f64) {
 }
 
 
+pub fn run_paa_encoding_decoding(test_file:&str, scl:usize,chunksize: f64) {
+    let file_iter = construct_file_iterator_skip_newline::<f64>(test_file, 0, ',');
+    let file_vec: Vec<f64> = file_iter.unwrap()
+        .map(|x| (x*SCALE))
+        .collect();
+
+    let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);
+    let org_size = seg.get_byte_size().unwrap();
+    let comp = PAACompress::new(chunksize as usize,10);
+    let start1 = Instant::now();
+    let compressed = comp.encode(&mut seg);
+    let duration1 = start1.elapsed();
+    let comp_cp = compressed.clone();
+    let comp_eq = compressed.clone();
+    let comp_sum = compressed.clone();
+    let comp_max = compressed.clone();
+    let comp_size = compressed.len();
+    println!("Time elapsed in PAA compress function() is: {:?}", duration1);
+
+    let start2 = Instant::now();
+    comp.decode::<f64>(compressed.as_slice());
+    let duration2 = start2.elapsed();
+    println!("Time elapsed in PAA decompress function() is: {:?}", duration2);
+
+    let start3 = Instant::now();
+    // comp.fixed_range_filter(comp_cp,pred);
+    let duration3 = start3.elapsed();
+    println!("Time elapsed in PAA range filter function() is: {:?}", duration3);
+
+    let start4 = Instant::now();
+    // comp.fixed_equal_filter(comp_eq,pred);
+    let duration4 = start4.elapsed();
+    println!("Time elapsed in PAA equal filter function() is: {:?}", duration4);
+
+    let start5 = Instant::now();
+    comp.sum::<f64>(comp_sum.as_slice());
+    let duration5 = start5.elapsed();
+    println!("Time elapsed in PAA sum function() is: {:?}", duration5);
+
+    let start6 = Instant::now();
+    comp.max::<f64>(comp_max.as_slice());
+    let duration6 = start6.elapsed();
+    println!("Time elapsed in PAA max function() is: {:?}", duration6);
+
+
+    println!("Performance:{},{},{},{},{},{},{},{},{},{}", test_file, scl, chunksize,
+             comp_size as f64/ org_size as f64,
+             1000000000.0 * org_size as f64 / duration1.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration2.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration3.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration4.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration5.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration6.as_nanos() as f64 / 1024.0/1024.0
+
+
+    )
+}
+
+
+pub fn run_fft_encoding_decoding(test_file:&str, scl:usize,ratio: f64) {
+    let file_iter = construct_file_iterator_skip_newline::<f64>(test_file, 0, ',');
+    let file_vec: Vec<f64> = file_iter.unwrap()
+        .map(|x| (x*SCALE))
+        .collect();
+
+    let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);
+    let org_size = seg.get_byte_size().unwrap();
+    let comp = FourierCompress::new(10,10,ratio);
+    let start1 = Instant::now();
+    let compressed = comp.encode(&mut seg);
+    let duration1 = start1.elapsed();
+    let comp_cp = compressed.clone();
+    let comp_eq = compressed.clone();
+    let comp_sum = compressed.clone();
+    let comp_max = compressed.clone();
+    let comp_size = compressed.len();
+    println!("Time elapsed in FFT compress function() is: {:?}", duration1);
+
+    let start2 = Instant::now();
+    comp.decode(compressed);
+    let duration2 = start2.elapsed();
+    println!("Time elapsed in FFT decompress function() is: {:?}", duration2);
+
+    let start3 = Instant::now();
+    // comp.fixed_range_filter(comp_cp,pred);
+    let duration3 = start3.elapsed();
+    println!("Time elapsed in FFT range filter function() is: {:?}", duration3);
+
+    let start4 = Instant::now();
+    // comp.fixed_equal_filter(comp_eq,pred);
+    let duration4 = start4.elapsed();
+    println!("Time elapsed in FFT equal filter function() is: {:?}", duration4);
+
+    let start5 = Instant::now();
+    comp.sum(comp_sum);
+    let duration5 = start5.elapsed();
+    println!("Time elapsed in FFT sum function() is: {:?}", duration5);
+
+    let start6 = Instant::now();
+    comp.max(comp_max);
+    let duration6 = start6.elapsed();
+    println!("Time elapsed in FFT max function() is: {:?}", duration6);
+
+
+    println!("Performance:{},{},{},{},{},{},{},{},{},{}", test_file, scl, ratio,
+             comp_size as f64/ org_size as f64,
+             1000000000.0 * org_size as f64 / duration1.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration2.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration3.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration4.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration5.as_nanos() as f64 / 1024.0/1024.0,
+             1000000000.0 * org_size as f64 / duration6.as_nanos() as f64 / 1024.0/1024.0
+
+
+    )
+}
+
 pub fn run_splitdouble_byte_residue_encoding_decoding(test_file:&str, scl:usize,pred: f64) {
     let file_iter = construct_file_iterator_skip_newline::<f64>(test_file, 0, ',');
     let file_vec: Vec<f64> = file_iter.unwrap()

@@ -54,12 +54,12 @@ pub mod pscan;
 pub mod avl;
 pub mod outlier;
 pub mod knn;
-// pub mod plot;
+// pub mod kmeans;
 mod tree;
 mod stats;
 mod btree;
 mod lcce;
-mod kernel;
+pub mod kernel;
 mod compression_demon;
 
 use client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
@@ -73,6 +73,8 @@ use crate::kernel::Kernel;
 use crate::methods::compress::{GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, CompressionMethod};
 use crate::methods::Methods::Fourier;
 use crate::methods::gorilla_encoder::GorillaEncoder;
+use crate::compress::gorilla::GorillaCompress;
+use crate::compress::sprintz::SprintzDoubleCompress;
 
 const DEFAULT_BUF_SIZE: usize = 150;
 const DEFAULT_DELIM: char = '\n';
@@ -401,7 +403,7 @@ pub fn run_test<T: 'static>(config_file: &str)
 //    let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf_option.unwrap().clone(),*compre_buf_option.unwrap().clone(),None,0.1,0.1,|x|(paa_compress(x,50)));
 // 	let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,kernel);
 	// let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,PAACompress::new(10,10));
-	let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,FourierCompress::new(10,1));
+	let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,FourierCompress::new(10,1,1.0));
 //	let mut compress_demon2:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf2.unwrap(),*comp_buf2.unwrap(),None,0.1,0.1,FourierCompress::new(10,1));
 
 	/* Construct the runtime */
@@ -831,7 +833,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 				comp_handlers.push(handle);
 			},
 			"fourier" => {
-				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, FourierCompress::new(10, batch));
+				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, FourierCompress::new(10, batch,1.0));
 				let handle = thread::spawn(move || {
 					println!("Run compression demon" );
 					compress_demon.run();
@@ -848,6 +850,15 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 				});
 				comp_handlers.push(handle);
 			}
+			// "sprintz" => {
+			// 	let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SprintzDoubleCompress::new(10, batch,10000));
+			// 	let handle = thread::spawn(move || {
+			// 		println!("Run compression demon" );
+			// 		compress_demon.run();
+			// 		println!("segment commpressed: {}", compress_demon.get_processed() );
+			// 	});
+			// 	comp_handlers.push(handle);
+			// }
 			"gzip" => {
 				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,GZipCompress::new(10,batch));
 				let handle = thread::spawn(move || {

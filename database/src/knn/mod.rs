@@ -296,8 +296,8 @@ pub fn paa_buff_file(file: &Path, wsize:i32, prec:i32) -> Vec<LabelPixel> {
                     }
                 }
             }
-        })
-        .collect()
+        }).collect()
+
 }
 
 fn distance_sqr(x: &[f64], y: &[f64]) -> f64 {

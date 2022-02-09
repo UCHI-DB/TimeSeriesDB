@@ -1711,7 +1711,7 @@ impl SplitBDDoubleCompress {
         expected_datapoints
     }
 
-    pub(crate) fn buff_major_decode_condition(&self, bytes: Vec<u8>,iter: Iter<usize>) -> Vec<f64>{
+    pub fn buff_major_decode_condition(&self, bytes: Vec<u8>,iter: Iter<usize>) -> Vec<f64>{
         let prec = (self.scale as f32).log10() as i32;
         let prec_delta = get_precision_bound(prec);
 

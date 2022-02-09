@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufReader, BufRead};
 use time_series_start::knn::{paa_file, classify, paa_buff_file, fft_file, grail_file, get_gamma, slurp_file};
 use std::env;
-use log::{ info};
+use log::{info};
 use std::borrow::Borrow;
 use std::time::Instant;
 
