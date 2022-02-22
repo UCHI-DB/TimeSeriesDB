@@ -6,15 +6,19 @@ use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 // K-Means
 use smartcore::cluster::kmeans::{KMeans, KMeansParameters};
 // Performance metrics
-use smartcore::metrics::{homogeneity_score, completeness_score, v_measure_score};
+use smartcore::metrics::{homogeneity_score, completeness_score, v_measure_score, roc_auc_score, accuracy};
 use std::env;
-use crate::file_io::{read_csvfile, read_paafile, read_fftfile, read_grailfile, build_iforest, predict_iforest};
+use crate::file_io::{read_csvfile, read_paafile, read_fftfile, read_grailfile, build_iforest, predict_iforest, compareGroundTruth, compare2lables, compare2lablesDirect};
 use std::path::Path;
 use std::collections::HashSet;
 use std::iter::FromIterator;
 use smartcore::cluster::dbscan::DBSCAN;
 use smartcore::cluster::dbscan::*;
+use smartcore::ensemble::random_forest_classifier::RandomForestClassifier;
 use smartcore::model_selection::train_test_split;
+use smartcore::naive_bayes::gaussian::GaussianNB;
+use smartcore::neighbors::knn_classifier::KNNClassifier;
+use smartcore::svm::svc::{SVC, SVCParameters};
 use smartcore::tree::decision_tree_classifier::DecisionTreeClassifier;
 use time_series_start::knn::get_gamma;
 
@@ -29,10 +33,9 @@ fn main() {
     println!("{}, {}, {}, {},",precision, train_set, method, lossy);
 
     let mut need_test_file = false;
-    let mut test_file = "".to_string();
-    if method.as_str()=="dtree" || method.as_str()=="iforest"{
+    let mut test_file =  train_set.clone().replace("_TRAIN", "_TEST");
+    if method.as_str()=="dtree" || method.as_str()=="iforest" || method.as_str()=="knn" || method.as_str()=="rforest"{
         need_test_file = true;
-        test_file = train_set.clone().replace("_TRAIN", "_TEST");
     }
 
 
@@ -56,10 +59,34 @@ fn main() {
         target_names: vec![],
         description: "".to_string()
     };
+
+
+
+    let mut origin_data = Dataset {
+        data: vec![],
+        target: vec![],
+        num_samples: 0,
+        num_features: 0,
+        feature_names: vec![],
+        target_names: vec![],
+        description: "".to_string()
+    };
+
+    let mut origin_test_data = Dataset {
+        data: vec![],
+        target: vec![],
+        num_samples: 0,
+        num_features: 0,
+        feature_names: vec![],
+        target_names: vec![],
+        description: "".to_string()
+    };
     // let digits_data = read_csvfile(&Path::new(train_set),precision as i32);
     // let digits_data = read_paafile(&Path::new(train_set),precision as i32);
     // let digits_data = read_fftfile(&Path::new(train_set), precision);
 
+    origin_data = read_paafile(&Path::new(train_set),1);
+    origin_test_data = read_paafile(&Path::new(&test_file),1);
 
     match lossy.as_str() {
         "buff" => {
@@ -119,25 +146,41 @@ fn main() {
         &test_data.data,
     );
 
+    let origin_x = DenseMatrix::from_array(
+        origin_data.num_samples,
+        origin_data.num_features,
+        &origin_data.data,
+    );
+
+    let origin_totest = DenseMatrix::from_array(
+        origin_test_data.num_samples,
+        origin_test_data.num_features,
+        &origin_test_data.data,
+    );
+
 // These are our target class labels
     let mut true_labels = &digits_data.target;
     let k = HashSet::<isize>::from_iter(true_labels.iter().map(|&x|x as isize).collect::<Vec<isize>>()).len();
     println!("K: {}", k);
 
     let mut labels= Vec::new();
+    let mut origin_labels = Vec::new();
 
     match method.as_str() {
         "dbscan" => {
             // Fit & predict with dbscan
             labels = DBSCAN::fit(&x, DBSCANParameters::default().with_eps(0.5)).
                 and_then(|dbscan| dbscan.predict(&x)).unwrap();
-
+            origin_labels = DBSCAN::fit(&origin_x, DBSCANParameters::default().with_eps(0.5)).
+                and_then(|dbscan| dbscan.predict(&origin_x)).unwrap();
         }
         "kmeans" => {
             // Fit & predict with kmeans
             let model = KMeans::fit(&x, KMeansParameters::default().with_k(k));
             labels = model.and_then(|kmeans| kmeans.predict(&x))
                 .unwrap();
+            origin_labels =  KMeans::fit(&origin_x, KMeansParameters::default().with_k(k)).
+                and_then(|kmeans| kmeans.predict(&origin_x)).unwrap();
         }
         "iforest" => {
             // Fit & predict with isolated forest
@@ -150,61 +193,74 @@ fn main() {
             println!("min value: {},{}", train_min,test_min);
             let iforest = build_iforest(&digits_data.data, &digits_data.target,digits_data.num_features,min);
             predict_iforest(iforest, &test_data.data, &test_data.target, test_data.num_features, min);
-
+            // todo: need to implemente for match labels
         }
         "dtree" => {
             // Fit & predict with decision tree
             let (x_train, x_test, y_train, y_test) = train_test_split(&x, &true_labels, 0.2, true);
             let model = DecisionTreeClassifier::fit(&x, &true_labels, Default::default());
             labels = model.and_then(|tree| tree.predict(&totest)).unwrap();
+            origin_labels = DecisionTreeClassifier::fit(&origin_x, &true_labels, Default::default())
+                .and_then(|tree| tree.predict(&origin_totest)).unwrap();
             true_labels = &test_data.target;
         }
+        "knn" => {
+            // Fit & predict with decision tree
+            let (x_train, x_test, y_train, y_test) = train_test_split(&x, &true_labels, 0.2, true);
+            let model =  KNNClassifier::fit(&x, &true_labels, Default::default());
+            labels = model.and_then(|tree| tree.predict(&totest)).unwrap();
+            origin_labels =  KNNClassifier::fit(&origin_x, &true_labels, Default::default()).
+                and_then(|tree| tree.predict(&origin_totest)).unwrap();
+            true_labels = &test_data.target;
+            // AUC is only work for binary clustering
+            // println!("AUC: {}", roc_auc_score(true_labels, &labels));
+        }
+        "rforest" => {
+            // Fit & predict with decision tree
+            let (x_train, x_test, y_train, y_test) = train_test_split(&x, &true_labels, 0.2, true);
+            let model =  RandomForestClassifier::fit(&x, &true_labels, Default::default());
+            labels = model.and_then(|tree| tree.predict(&totest)).unwrap();
+            origin_labels = RandomForestClassifier::fit(&origin_x, &true_labels, Default::default())
+                .and_then(|tree| tree.predict(&origin_totest)).unwrap();
+            true_labels = &test_data.target;
+            // AUC is only work for binary clustering
+            // println!("AUC: {}", roc_auc_score(true_labels, &labels));
+        }
+        "nb" => {
+            // Fit & predict with decision tree
+            let gnb = GaussianNB::fit(&x, &true_labels, Default::default()).unwrap();
+            labels = gnb.predict(&x).unwrap(); // Predict class labels
+            origin_labels = GaussianNB::fit(&origin_x, &true_labels, Default::default()).unwrap()
+                .predict(&origin_x).unwrap();
+            println!("accuracy: {}", accuracy(true_labels, &labels)); // Prints 0.96
+        }
+        // "svm" => {
+        //     // Fit & predict with decision tree
+        //     let (x_train, x_test, y_train, y_test) = train_test_split(&x, &true_labels, 0.2, true);
+        //     let model =  SVC::fit(&x, &true_labels,  SVCParameters::default().with_c());
+        //     labels = model.and_then(|tree| tree.predict(&totest)).unwrap();
+        //     true_labels = &test_data.target;
+        //     // AUC is only work for binary clustering
+        //     // println!("AUC: {}", roc_auc_score(true_labels, &labels));
+        // }
         _ => {panic!("clustering method not supported yet.")}
     }
 
 // Measure performance
     let mut correct = 0;
-    if method.as_str()=="dtree"{
-        for (i, &x) in labels.iter().enumerate() {
-            if x as usize == true_labels[i] as usize{
-                correct+=1;
-            }
-        }
+    let mut acc = 0.0;
+    let mut acc1 = 0.0;
+    if method.as_str()=="dtree" || method.as_str()=="knn" || method.as_str()=="nb" || method.as_str()=="rforest"{
+        acc = compare2lablesDirect(&true_labels,&labels);
+        acc1 = compare2lablesDirect(&origin_labels,&labels);
     }
     else {
-        let mut map = vec![0; k];
-        for cluster in 0..k{
-            let mut counter = vec![0; k];
-            for (i, &x) in labels.iter().enumerate() {
-                // println!("i:{},x:{}, x as usize: {}, cluster :{}",i,x,x as usize,cluster+1);
-                if (x as usize ) ==cluster{
-                    // println!("true label: {}",true_labels[i]);
-                    counter[(true_labels[i] as usize-1)] += 1
-                }
-            }
-            let mut max = 0;
-            let mut translate = 0;
-            // println!("--label translation counter: {:?}",counter);
-            for (i, &x) in counter.iter().enumerate() {
-                if x>max{
-                    max = x;
-                    translate = i;
-                }
-            }
-            map[cluster] = translate;
-        }
-        // println!("--label translation: {:?}",map);
-
-
-        for (i, &x) in labels.iter().enumerate() {
-            if (map[x as usize] + 1) == true_labels[i] as usize{
-                correct+=1;
-            }
-        }
-
+        acc = compareGroundTruth(true_labels,&labels, k);
+        acc1 = compare2lables(&origin_labels,&labels, k);
     }
 
-    println!("Acc: {}",correct as f64/true_labels.len() as f64);
+
+    println!("Acc: {},{}",acc,acc1);
     println!("Homogeneity: {}", homogeneity_score(true_labels, &labels));
     println!("Completeness: {}", completeness_score(true_labels, &labels));
     println!("V Measure: {}", v_measure_score(true_labels, &labels));

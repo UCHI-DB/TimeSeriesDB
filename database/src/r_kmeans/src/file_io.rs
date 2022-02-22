@@ -218,6 +218,97 @@ pub(crate) fn build_iforest(vec: &Vec<f64>, labels: &Vec<f64>, nc: usize, min:f6
 }
 
 
+/// designed for two label sets with 1 difference
+pub fn compareGroundTruth(grd: &Vec<f64>, pred: &Vec<f64>, k:usize) -> f64{
+    let mut map = vec![0; k];
+    let mut correct = 0;
+    for cluster in 0..k{
+        let mut counter = vec![0; k];
+        for (i, &x) in pred.iter().enumerate() {
+            // println!("i:{},x:{}, x as usize: {}, cluster :{}",i,x,x as usize,cluster+1);
+            if (x as usize ) ==cluster{
+                // println!("true label: {}",grd[i]);
+                counter[(grd[i] as usize-1)] += 1
+            }
+        }
+        let mut max = 0;
+        let mut translate = 0;
+        // println!("--label translation counter: {:?}",counter);
+        for (i, &x) in counter.iter().enumerate() {
+            if x>max{
+                max = x;
+                translate = i;
+            }
+        }
+        map[cluster] = translate;
+    }
+    // println!("--label translation: {:?}",map);
+
+
+    for (i, &x) in pred.iter().enumerate() {
+        if (map[x as usize] + 1) == grd[i] as usize{
+            correct+=1;
+        }
+    }
+
+    let acc = correct as f64 /grd.len() as f64;
+    return acc;
+}
+
+/// Designed for two label vectors with the same label set.
+pub fn compare2lablesDirect(grd: &Vec<f64>, pred: &Vec<f64>) -> f64{
+    let mut correct  = 0;
+    for (i, &x) in grd.iter().enumerate() {
+        // println!("{},{}",x,origin_labels[i]);
+        if x as usize == pred[i] as usize{
+            correct+=1;
+        }
+    }
+    println!("correct count: {}",correct);
+    let acc = correct as f64 /grd.len() as f64;
+    return acc;
+}
+
+/// compare two labels: find frequent labels and match
+pub fn compare2lables(grd: &Vec<f64>, pred: &Vec<f64>, k:usize) -> f64{
+    let mut map = vec![0; k+1];
+    let mut correct = 0;
+    for cluster in 0..k+1{
+        let mut counter = vec![0; k+1];
+        for (i, &x) in pred.iter().enumerate() {
+            // println!("i:{},x:{}, x as usize: {}, cluster :{}",i,x,x as usize,cluster+1);
+            if (x as usize ) ==cluster{
+                // println!("true label: {}",grd[i]);
+                counter[(grd[i] as usize)] += 1
+            }
+        }
+        let mut max = 0;
+        let mut translate = 0;
+        // println!("--label translation counter: {:?}",counter);
+        for (i, &x) in counter.iter().enumerate() {
+            if x>=max{
+                max = x;
+                translate = i;
+            }
+        }
+        map[cluster] = translate;
+    }
+    // println!("--label translation: {:?}",map);
+
+
+    for (i, &x) in pred.iter().enumerate() {
+        // println!("{},{},{}",x,grd[i],map[x as usize]);
+        if (map[x as usize] ) == grd[i] as usize{
+            correct+=1;
+        }
+    }
+    println!("correct count: {}",correct);
+    let acc = correct as f64 /grd.len() as f64;
+    return acc;
+}
+
+
+
 pub(crate) fn predict_iforest(forest:Forest, vec:&Vec<f64>, labels:&Vec<f64>, nc: usize,  min:f64)  {
     let mut avg_control_set_score = 0.0;
     let mut avg_outlier_set_score = 0.0;
