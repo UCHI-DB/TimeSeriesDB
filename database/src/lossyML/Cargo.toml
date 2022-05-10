@@ -1,5 +1,5 @@
 [package]
-name = "r_kmeans"
+name = "lossyML"
 version = "0.1.0"
 authors = ["chunwei <tranway@qq.com>"]
 edition = "2018"
@@ -13,3 +13,5 @@ ndarray = "0.12.1"
 isolation_forest = "1.1.0"
 rand = "0.8.4"
 csv = "1.1.6"
+lttb = "0.2.0"
+piecewise-linear = "0.1.0"

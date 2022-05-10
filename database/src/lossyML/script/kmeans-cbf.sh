@@ -1,4 +1,4 @@
-cd /Users/chunwei/research/TimeSeriesDB/database/src/r_kmeans/;
+cd /Users/chunwei/research/TimeSeriesDB/database/src/lossyML/;
 method=$1
 lossy=$2
 TIME=$3
@@ -12,7 +12,7 @@ file="CBF"
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package r_kmeans --bin r_kmeans $method ../../../UCRArchive2018/${file}/${file}_TEST $lossy $prec >> data/${method}_${lossy}_testlog.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCRArchive2018/${file}/${file}_TEST $lossy $prec >> data/${method}_${lossy}_testlog.csv
 		      done
 	    done
     elif [ "$lossy" == "paa" ]; then
@@ -20,7 +20,7 @@ file="CBF"
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package r_kmeans --bin r_kmeans $method ../../../UCRArchive2018/${file}/${file}_TRAIN $lossy $prec >> data/${method}_${lossy}_testlog.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCRArchive2018/${file}/${file}_TRAIN $lossy $prec >> data/${method}_${lossy}_testlog.csv
 		      done
 	    done
 	  elif [ "$lossy" == "fft" ]; then
@@ -28,7 +28,7 @@ file="CBF"
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package r_kmeans --bin r_kmeans $method ../../../UCRArchive2018/${file}/${file}_TRAIN $lossy $prec >> data/${method}_${lossy}_testlog.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCRArchive2018/${file}/${file}_TRAIN $lossy $prec >> data/${method}_${lossy}_testlog.csv
 		      done
 	    done
 	  elif [ "$lossy" == "buff" ]; then
@@ -36,7 +36,7 @@ file="CBF"
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package r_kmeans --bin r_kmeans $method ../../../UCRArchive2018/${file}/${file}_TRAIN $lossy $prec >> data/${method}_${lossy}_testlog.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCRArchive2018/${file}/${file}_TRAIN $lossy $prec >> data/${method}_${lossy}_testlog.csv
 		      done
 	    done
     fi
@@ -47,6 +47,6 @@ file="CBF"
 #	done
 echo "all done to ${method}_${lossy}_testlog.csv"
 
-python3 /Users/chunwei/research/TimeSeriesDB/database/src/r_kmeans/script/kmeans_logparser.py data/${method}_${lossy}_testlog.csv data/parsed-test-${method}_${lossy}.csv $TIME
+python3 /Users/chunwei/research/TimeSeriesDB/database/src/lossyML/script/kmeans_logparser.py data/${method}_${lossy}_testlog.csv data/parsed-test-${method}_${lossy}.csv $TIME
 
 			

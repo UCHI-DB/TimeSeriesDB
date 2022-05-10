@@ -13,6 +13,9 @@ use ndarray::Array2;
 use isolation_forest::isolation_forest::{Feature, FeatureList, Forest, Sample};
 use rand::distributions::Uniform;
 use rand::prelude::*;
+use lttb::{DataPoint,lttb};
+use piecewise_linear::{PiecewiseLinearFunction};
+use std::convert::TryFrom;
 
 pub fn read_csvfile(file: &Path, prec:i32) -> Dataset<f64, f64> {
     let prec_delta = get_precision_bound(prec);
@@ -41,7 +44,7 @@ pub fn read_csvfile(file: &Path, prec:i32) -> Dataset<f64, f64> {
     }
     let ns = labels.len();
     let nf = vals.len()/ns;
-    println!("ns: {}, nf: {}", ns, nf);
+    // println!("ns: {}, nf: {}", ns, nf);
     let dataset = Dataset {
         data: vals,
         target: labels,
@@ -92,7 +95,7 @@ pub fn read_paafile(file: &Path, wsize:i32) -> Dataset<f64, f64> {
     }
     let ns = labels.len();
     let nf = vals.len()/ns;
-    println!("ns: {}, nf: {}", ns, nf);
+    // println!("ns: {}, nf: {}", ns, nf);
     let dataset = Dataset {
         data: vals,
         target: labels,
@@ -130,7 +133,7 @@ pub fn read_fftfile(file: &Path, ratio:f64) -> Dataset<f64, f64> {
     }
     let ns = labels.len();
     let nf = vals.len()/ns;
-    println!("ns: {}, nf: {}", ns, nf);
+    // println!("ns: {}, nf: {}", ns, nf);
     let dataset = Dataset {
         data: vals,
         target: labels,
@@ -143,6 +146,42 @@ pub fn read_fftfile(file: &Path, ratio:f64) -> Dataset<f64, f64> {
     return dataset;
 }
 
+// implementation for largest triangle three buckets (lttb) algorithm for time series downsampling
+pub fn read_plafile(file: &Path, ratio:f64) -> Dataset<f64, f64> {
+    let mut labels = Vec::new();
+    let mut vals  = Vec::new();
+    for line in BufReader::new(File::open(file).unwrap()).lines().skip(1){
+        let line = line.unwrap();
+        let mut iter = line.trim()
+            .split(',')
+            .map(|x| f64::from_str(x).unwrap());
+
+        let label =  iter.next().unwrap();
+        let vec = iter.collect::<Vec<_>>();
+        let pixels = {if ratio>=1.0 {
+            vec
+        }else{
+            pla_ratio(&vec,ratio/2.0)
+        }
+        };
+        // println!("{:?}",vec.as_slice());
+        labels.push(label);
+        vals.extend(pixels);
+    }
+    let ns = labels.len();
+    let nf = vals.len()/ns;
+    // println!("ns: {}, nf: {}", ns, nf);
+    let dataset = Dataset {
+        data: vals,
+        target: labels,
+        num_samples: ns,
+        num_features: nf,
+        feature_names: vec![],
+        target_names: vec![],
+        description: "".to_string(),
+    };
+    return dataset;
+}
 
 
 pub fn read_grailfile(file: &Path, dict: &Path, gamma:usize, coeffs:usize) -> Dataset<f64, f64> {
@@ -176,7 +215,7 @@ pub fn read_grailfile(file: &Path, dict: &Path, gamma:usize, coeffs:usize) -> Da
     }
     let ns = labels.len();
     let nf = vals.len()/ns;
-    println!("ns: {}, nf: {}", ns, nf);
+    // println!("ns: {}, nf: {}", ns, nf);
     let dataset = Dataset {
         data: vals,
         target: labels,
@@ -189,6 +228,35 @@ pub fn read_grailfile(file: &Path, dict: &Path, gamma:usize, coeffs:usize) -> Da
     return dataset;
 }
 
+pub fn pla_ratio(data: &[f64], ratio: f64) -> Vec<f64>{
+    let size = data.len();
+    let mut budget= (ratio * size as f64) as usize;
+    if budget <2{
+        budget = 2;
+    }
+
+    // println!("pla budget: {}",budget);
+
+    let mut raw = vec!();
+    for (pos, &e) in data.iter().enumerate() {
+        raw.push(DataPoint::new(pos as f64, e));
+    }
+    // Downsample the raw data to use just three datapoints.
+    let downsampled = lttb(raw, budget);
+
+    // println!("{},{}",size,  downsampled.len());
+    let mut sample = vec!();
+    for p in downsampled{
+        sample.push((p.x,p.y));
+    }
+    let f = PiecewiseLinearFunction::try_from(sample).unwrap();
+    let mut res:Vec<f64>  = Vec::new();
+    for i in 0..size {
+        res.push(f.y_at_x(i as f64).unwrap());
+    }
+    // println!("{:?}\n{:?}",data, res);
+    res
+}
 
 pub(crate) fn build_iforest(vec: &Vec<f64>, labels: &Vec<f64>, nc: usize, min:f64) -> Forest {
 
@@ -219,7 +287,8 @@ pub(crate) fn build_iforest(vec: &Vec<f64>, labels: &Vec<f64>, nc: usize, min:f6
 
 
 /// designed for two label sets with 1 difference
-pub fn compareGroundTruth(grd: &Vec<f64>, pred: &Vec<f64>, k:usize) -> f64{
+pub fn compareGroundTruthUCR(grd: &Vec<f64>, pred: &Vec<f64>, k:usize) -> f64{
+    println!("ground truth label {:?}, predicted label: {}",grd.len(), pred.len());
     let mut map = vec![0; k];
     let mut correct = 0;
     for cluster in 0..k{
@@ -247,6 +316,44 @@ pub fn compareGroundTruth(grd: &Vec<f64>, pred: &Vec<f64>, k:usize) -> f64{
 
     for (i, &x) in pred.iter().enumerate() {
         if (map[x as usize] + 1) == grd[i] as usize{
+            correct+=1;
+        }
+    }
+
+    let acc = correct as f64 /grd.len() as f64;
+    return acc;
+}
+
+
+pub fn compareGroundTruthUCI(grd: &Vec<f64>, pred: &Vec<f64>, k:usize) -> f64{
+    println!("ground truth label {:?}, predicted label: {}",grd.len(), pred.len());
+    let mut map = vec![0; k];
+    let mut correct = 0;
+    for cluster in 0..k{
+        let mut counter = vec![0; k];
+        for (i, &x) in pred.iter().enumerate() {
+            // println!("i:{},x:{}, x as usize: {}, cluster :{}",i,x,x as usize,cluster+1);
+            if (x as usize ) ==cluster{
+                // println!("true label: {}",grd[i]);
+                counter[(grd[i] as usize)] += 1
+            }
+        }
+        let mut max = 0;
+        let mut translate = 0;
+        // println!("--label translation counter: {:?}",counter);
+        for (i, &x) in counter.iter().enumerate() {
+            if x>max{
+                max = x;
+                translate = i;
+            }
+        }
+        map[cluster] = translate;
+    }
+    // println!("--label translation: {:?}",map);
+
+
+    for (i, &x) in pred.iter().enumerate() {
+        if (map[x as usize] ) == grd[i] as usize{
             correct+=1;
         }
     }

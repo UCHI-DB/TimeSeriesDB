@@ -32,7 +32,9 @@ with open(outfile, 'w+') as the_file:
     with open(infile) as f:
         content = f.readlines()
         for line in content:
-            if "UCRArchive2018" in line.rstrip():
+            if "UCI121" in line.rstrip():
+                cur= line.rstrip()
+            elif "UCRArchive2018" in line.rstrip():
                 cur= line.rstrip()
             elif 'ns:' in line.rstrip().split(",")[0] :
                 cur+= line.rstrip().split(",")[0].split(":")[1]
