@@ -403,7 +403,7 @@ impl SplitBDDoubleCompress {
         }
 
         let duration1 = start1.elapsed();
-        println!("Time elapsed in writing double function() is: {:?}", duration1);
+        // println!("Time elapsed in writing double function() is: {:?}", duration1);
 
         // println!("total number of dec is: {}", j);
         let vec = bitpack_vec.into_vec();
@@ -8019,7 +8019,7 @@ impl SplitBDDoubleCompress {
         let mut max = u64::min_value();
 
         // println!("target value with integer part:{}, decimal part:{}",int_target,dec_target);
-        let mut byte_count = 0;
+        let byte_count = 0;
         let mut fixed_max = u32::min_value();
         // let start = Instant::now();
 
@@ -8520,12 +8520,12 @@ impl<'a, T> CompressionMethod<T> for SplitBDDoubleCompress
     }
 
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
-        let start = Instant::now();
+        // let start = Instant::now();
         for seg in segs {
-            self.offset_encode(seg);
+            self.byte_fixed_encode(seg);
         }
-        let duration = start.elapsed();
-        info!("Time elapsed in splitBD function() is: {:?}", duration);
+        // let duration = start.elapsed();
+        // info!("Time elapsed in splitBD function() is: {:?}", duration);
     }
 
     fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {

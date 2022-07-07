@@ -671,7 +671,7 @@ pub(crate) fn sprintz_double_encoder<'a, T>(mydata: &[T], scl:usize) -> Vec<u8>
     where T: Serialize + Clone+ Copy+Into<f64> + Deserialize<'a>{
     let ldata: Vec<i32> = mydata.into_iter().map(|x| ((*x).into()* scl as f64).ceil() as i32).collect::<Vec<i32>>();
     let (base, num_bits, delta_vec) = zigzag_delta_num_bits(ldata.as_ref());
-    println!("base int:{}",base);
+    // println!("base int:{}",base);
     info!("Number of bits: {}", num_bits);
     info!("10th vec: {},{},{},{}", delta_vec[0],delta_vec[1],delta_vec[2],delta_vec[3]);
     let ubase_int = unsafe { mem::transmute::<i32, u32>(base) };
@@ -691,11 +691,11 @@ pub(crate) fn sprintz_double_encoder<'a, T>(mydata: &[T], scl:usize) -> Vec<u8>
     }
     let vec = bitpack_vec.into_vec();
     let duration2 = start.elapsed();
-    println!("Time elapsed in writing double function() is: {:?}", duration2);
+    // println!("Time elapsed in writing double function() is: {:?}", duration2);
 
     info!("Length of compressed data: {}", vec.len());
     let ratio= vec.len() as f32 / (mydata.len() as f32*mem::size_of::<T>() as f32);
-    print!("{}",ratio);
+    // print!("{}",ratio);
     vec
 }
 

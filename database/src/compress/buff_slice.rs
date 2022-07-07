@@ -409,7 +409,7 @@ impl BuffSliceCompress {
 
                 println!("write the {}th byte of dec",bytec);
             }
-            if (remain>0){
+            if remain>0 {
                 // add right padding for last slice.
                 let padding = 8-remain;
                 for d in fixed_u64 {

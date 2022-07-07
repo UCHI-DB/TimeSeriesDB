@@ -162,7 +162,7 @@ impl<'a,T> Segment<T>
  *******************Segment Key Implementation******************
  ***************************************************************/ 
 
-#[derive(Serialize,Deserialize,Debug,PartialEq,Eq,Hash,Copy,Clone)]
+#[derive(Serialize,Deserialize,Debug,PartialEq,Eq,Hash,Copy,Clone,Ord,PartialOrd)]
 pub struct SegmentKey {
 	timestamp: SystemTime,
 	signal: SignalId,
@@ -268,7 +268,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 		fft.process(&mut input, &mut output);
 
 		Segment {
-			method: Some(Fourier),
+			method: Some(Fourier(1.0)),
 			timestamp: self.timestamp,
 			signal: self.signal,
 			data: output,
@@ -301,7 +301,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 		// skip normalizing by sqr(size), will handle this in decompression step
 
 		Segment {
-			method: Some(Fourier),
+			method: Some(Fourier (ratio)),
 			timestamp: self.timestamp,
 			signal: self.signal,
 			data: output,

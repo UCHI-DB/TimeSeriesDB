@@ -37,7 +37,7 @@ use time_series_start::compress::sprintz::SprintzDoubleCompress;
 use time_series_start::methods::prec_double::{PrecisionBound, get_precision_bound};
 use time_series_start::knn::fft_ifft_ratio;
 use time_series_start::client::{construct_file_client_skip_newline,Amount,RunPeriod,Frequency};
-use time_series_start::buffer_pool::{SegmentBuffer,ClockBuffer,NoFmClockBuffer};
+use time_series_start::buffer_pool::{SegmentBuffer,ClockBuffer,LRUBuffer, NoFmClockBuffer};
 use time_series_start::future_signal::{BufferedSignal};
 use toml_loader::{Loader};
 use rocksdb::{DB};
@@ -51,14 +51,13 @@ use futures::sync::oneshot;
 use std::sync::{Arc,Mutex};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+use time_series_start::compress::split_double::SplitBDDoubleCompress;
 
 
 const DEFAULT_BUF_SIZE: usize = 150;
 const DEFAULT_DELIM: char = '\n';
 
-pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
-{
+pub fn run_single_test(config_file: &str, comp:&str, num_comp:i32, num_recode: i32){
 
 	let config = match Loader::from_file(Path::new(config_file)) {
 		Ok(config) => config,
@@ -125,13 +124,13 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		None => DEFAULT_BUF_SIZE,
 	};
 
-	let buf_option: Option<Box<Arc<Mutex<(SegmentBuffer<T> + Send + Sync)>>>> = match fm {
+	let buf_option: Option<Box<Arc<Mutex<(SegmentBuffer<f64> + Send + Sync)>>>> = match fm {
 		Some(fm) => {
 			match config.lookup("buffer") {
 				Some(config) => {
 					let buf_type = config.lookup("type").expect("A buffer type must be provided");
 					match buf_type.as_str().expect("Buffer type must be provided as string") {
-						"Clock" => Some(Box::new(Arc::new(Mutex::new(ClockBuffer::<T,rocksdb::DB>::new(buffer_size,*fm))))),
+						"Clock" => Some(Box::new(Arc::new(Mutex::new(ClockBuffer::<f64,rocksdb::DB>::new(buffer_size,*fm))))),
 						x => panic!("The buffer type, {:?}, is not currently supported to run with a file manager", x),
 					}
 				}
@@ -143,7 +142,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 				Some(config) => {
 					let buf_type = config.lookup("type").expect("A buffer type must be provided");
 					match buf_type.as_str().expect("Buffer type must be provided as a string") {
-						"NoFmClock" => Some(Box::new(Arc::new(Mutex::new(NoFmClockBuffer::<T>::new(buffer_size))))),
+						"NoFmClock" => Some(Box::new(Arc::new(Mutex::new(NoFmClockBuffer::<f64>::new(buffer_size))))),
 						x => panic!("The buffer type, {:?}, is not currently supported to run without a file manager", x),
 					}
 				}
@@ -153,13 +152,14 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	};
 
 	/* Create buffer for compression segments*/
-	let compre_buf_option: Option<Box<Arc<Mutex<(SegmentBuffer<T> + Send + Sync)>>>> = match fm_comp {
+	let compre_buf_option: Option<Box<Arc<Mutex<(SegmentBuffer<f64> + Send + Sync)>>>> = match fm_comp {
 		Some(fm) => {
-			match config.lookup("buffer") {
+			match config.lookup("comp_buffer") {
 				Some(config) => {
 					let buf_type = config.lookup("type").expect("A buffer type must be provided");
 					match buf_type.as_str().expect("Buffer type must be provided as string") {
-						"Clock" => Some(Box::new(Arc::new(Mutex::new(ClockBuffer::<T,rocksdb::DB>::new(buffer_size,*fm))))),
+						"Clock" => Some(Box::new(Arc::new(Mutex::new(ClockBuffer::<f64,rocksdb::DB>::new(buffer_size,*fm))))),
+						"LRU" => Some(Box::new(Arc::new(Mutex::new(LRUBuffer::<f64,rocksdb::DB>::new(buffer_size,*fm))))),
 						x => panic!("The buffer type, {:?}, is not currently supported to run with a file manager", x),
 					}
 				}
@@ -171,7 +171,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 				Some(config) => {
 					let buf_type = config.lookup("type").expect("A buffer type must be provided");
 					match buf_type.as_str().expect("Buffer type must be provided as a string") {
-						"NoFmClock" => Some(Box::new(Arc::new(Mutex::new(NoFmClockBuffer::<T>::new(buffer_size))))),
+						"NoFmClock" => Some(Box::new(Arc::new(Mutex::new(NoFmClockBuffer::<f64>::new(buffer_size))))),
 						x => panic!("The buffer type, {:?}, is not currently supported to run without a file manager", x),
 					}
 				}
@@ -280,7 +280,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 					let dict = match params.lookup("dict") {
 						Some(value) => {
 							let dict_str = value.as_str().expect("The file dictionary file must be privded as a string");
-							let dic = read_dict::<T>(dict_str,delim);
+							let dic = read_dict::<f64>(dict_str,delim);
 							println!("dictionary shape: {} * {}", dic.rows(), dic.cols());
 							Some(dic)
 						},
@@ -289,16 +289,16 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 					testdict = dict.clone();
 
-					let client: Box<(Stream<Item=T,Error=()> + Sync + Send)> = match reader_type {
+					let client: Box<(Stream<Item=f64,Error=()> + Sync + Send)> = match reader_type {
 						"NewlineAndSkip" => {
 
 							let skip_val = match params.lookup("skip") {
 								Some(skip_val) => skip_val.as_integer().expect("The skip value must be provided as an integer") as usize,
 								None => 0,
 							};
-							Box::new(construct_file_client_skip_newline::<T>(path, skip_val, delim, amount, run_period, frequency).expect("Client could not be properly produced"))
+							Box::new(construct_file_client_skip_newline::<f64>(path, skip_val, delim, amount, run_period, frequency).expect("Client could not be properly produced"))
 						}
-						"DeserializeDelim" => Box::new(construct_file_client::<T>(path, delim as u8, amount, run_period, frequency).expect("Client could not be properly produced")),
+						"DeserializeDelim" => Box::new(construct_file_client::<f64>(path, delim as u8, amount, run_period, frequency).expect("Client could not be properly produced")),
 						x => panic!("The specified file reader, {:?}, is not supported yet", x),
 					};
 
@@ -318,7 +318,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 						}
 					}
 					let params = client_config.lookup("params").expect("The generator client type requires a params table");
-					let client: Box<(dyn Stream<Item=T,Error=()> + Sync + Send)> = match client_config.lookup("gen_type")
+					let client: Box<(dyn Stream<Item=f64,Error=()> + Sync + Send)> = match client_config.lookup("gen_type")
 						.expect("The gen client must be provided a gen type field")
 						.as_str()
 						.expect("The gen type must be provided as a string")
@@ -349,7 +349,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 								let dist = Uniform::new(low,high);
 
-								Box::new(construct_gen_client::<f32,_,T>(dist, amount, run_period, frequency))
+								Box::new(construct_gen_client::<f32,_,f64>(dist, amount, run_period, frequency))
 							}
 							x => panic!("The provided generator type, {:?}, is not currently supported", x),
 						};
@@ -397,10 +397,19 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 
 	let mut comp_handlers = Vec::new();
 
-	for x in 0..num_comp {
+	for _x in 0..num_comp {
 		match comp{
 			"paa" => {
 				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,PAACompress::new(10,batch));
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			},
+			"buff" => {
+				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,SplitBDDoubleCompress::new(10,batch, 10000));
 				let handle = thread::spawn(move || {
 					println!("Run compression demon" );
 					compress_demon.run();
@@ -426,15 +435,15 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 				});
 				comp_handlers.push(handle);
 			}
-			// "sprintz" => {
-			// 	let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SprintzDoubleCompress::new(10, batch,10000));
-			// 	let handle = thread::spawn(move || {
-			// 		println!("Run compression demon" );
-			// 		compress_demon.run();
-			// 		println!("segment commpressed: {}", compress_demon.get_processed() );
-			// 	});
-			// 	comp_handlers.push(handle);
-			// }
+			"sprintz" => {
+				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SprintzDoubleCompress::new(10, batch,10000));
+				let handle = thread::spawn(move || {
+					println!("Run sprintz compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
 			"gzip" => {
 				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,GZipCompress::new(10,batch));
 				let handle = thread::spawn(move || {
@@ -446,7 +455,83 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 			}
 
 			"kernel" => {
-				let mut knl = Kernel::new(array![[T::one(), T::one()],[T::one(), T::one()]],1,4,30);
+				let mut knl = Kernel::new(array![[1.0, 1.0],[1.0, 1.0]],1,4,30);
+				if testdict != None{
+					knl = Kernel::new(testdict.clone().unwrap(),1,4,30);
+					knl.rbfdict_pre_process();
+				}
+				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,knl);
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
+			_ => {panic!("Compression not supported yet.")}
+		}
+
+	}
+
+	for _x in 0..num_recode {
+		match comp{
+			"paa" => {
+				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,PAACompress::new(10,batch));
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			},
+			"buff" => {
+				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,SplitBDDoubleCompress::new(10,batch, 10000));
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			},
+			"fourier" => {
+				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, FourierCompress::new(10, batch,1.0));
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
+			"snappy" => {
+				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SnappyCompress::new(10, batch));
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
+			"sprintz" => {
+				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SprintzDoubleCompress::new(10, batch,10000));
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
+			"gzip" => {
+				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,GZipCompress::new(10,batch));
+				let handle = thread::spawn(move || {
+					println!("Run compression demon" );
+					compress_demon.run();
+					println!("segment commpressed: {}", compress_demon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
+
+			"kernel" => {
+				let mut knl = Kernel::new(array![[1.0, 1.0],[1.0, 1.0]],1,4,30);
 				if testdict != None{
 					knl = Kernel::new(testdict.clone().unwrap(),1,4,30);
 					knl.rbfdict_pre_process();
@@ -473,7 +558,7 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 		spawn_handles.push(oneshot::spawn(sig, &executor))
 	}
 
-	for comp in comp_handlers {
+	for _comp in comp_handlers {
 		// comp.join().unwrap();
 	}
 

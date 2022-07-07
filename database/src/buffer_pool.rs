@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use serde::{Serialize};
 use serde::de::DeserializeOwned;
@@ -87,6 +88,11 @@ pub trait SegmentBuffer<T: Copy + Send> {
 	/* Remove the segment from the buffer and return it */
 	fn remove_segment(&mut self) -> Result<Segment<T>, BufErr>;
 
+	/* Returns true if the number of items in the buffer divided by
+	 * the maximum number of items the buffer can hold belows
+	 * the provided idle threshold
+	 */
+	fn idle_threshold(&self, threshold: f32) -> bool;
 
 	/* Signal done*/
 	fn is_done(&self)->bool;
@@ -213,6 +219,10 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 	fn exceed_threshold(&self, threshold: f32) -> bool {
 		//println!("{}full, threshold:{}",(self.buffer.len() as f32 / self.buf_size as f32), threshold);
 		return (self.buffer.len() as f32 / self.buf_size as f32) >= threshold;
+	}
+
+	fn idle_threshold(&self, threshold: f32) -> bool {
+		unimplemented!()
 	}
 
 	fn remove_segment(&mut self) -> Result<Segment<T>,BufErr> {
@@ -453,6 +463,10 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 		return (self.buffer.len() as f32 / self.buf_size as f32) > threshold;
 	}
 
+	fn idle_threshold(&self, threshold: f32) -> bool {
+		unimplemented!()
+	}
+
 	fn remove_segment(&mut self) -> Result<Segment<T>,BufErr> {
 		let mut counter = 0;
 		loop {
@@ -556,4 +570,298 @@ impl<T> NoFmClockBuffer<T>
 			self.update_hand();
 		}
 	}
+}
+
+/***************************************************************
+ ************************LRUcomp_Buffer************************
+ ***************************************************************/
+/* LRU based compression with limited space budget.
+Use double linked list to achieve O(1) get and put time complexity*/
+
+#[derive(Debug)]
+pub struct LRUBuffer<T,U>
+	where T: Copy + Send,
+		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
+{
+	budget: usize,
+	cur_size: usize,
+	head: Option<SegmentKey>,
+	tail: Option<SegmentKey>,
+	buffer: BTreeMap<SegmentKey,Node<T>>,
+	file_manager: U,
+	buf_size: usize,
+	done: bool,
+}
+
+#[derive(Clone, Debug)]
+struct Node<T>
+	where T: Copy + Send,
+{
+	value: Segment<T>,
+	next: Option<SegmentKey>,
+	prev: Option<SegmentKey>,
+}
+
+
+impl<T,U> SegmentBuffer<T> for LRUBuffer<T,U>
+	where T: Copy + Send + Serialize + DeserializeOwned + Debug,
+		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
+{
+
+	fn get(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>,BufErr> {
+		if self.retrieve(key)? {
+			match self.buffer.get(&key) {
+				Some(seg) => Ok(Some(&seg.value)),
+				None => Err(BufErr::GetFail),
+			}
+		} else {
+			Ok(None)
+		}
+	}
+
+	fn get_mut(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>,BufErr> {
+		if self.retrieve(key)? {
+			match self.buffer.get_mut(&key) {
+				Some(seg) => Ok(Some(&seg.value)),
+				None => Err(BufErr::GetMutFail),
+			}
+		} else {
+			Ok(None)
+		}
+	}
+
+
+	fn is_done(&self)->bool{
+		self.done
+	}
+
+	#[inline]
+	fn put(&mut self, seg: Segment<T>) -> Result<(), BufErr> {
+		let seg_key = seg.get_key();
+		self.put_with_key(seg_key, seg)
+	}
+
+
+	fn drain(&mut self) -> Drain<Segment<T>> {
+		unimplemented!()
+	}
+
+	fn copy(&self) -> Vec<Segment<T>> {
+		self.buffer.values().map(|x| x.value.clone()).collect()
+	}
+
+	/* Write to file system */
+	fn persist(&self) -> Result<(),BufErr> {
+		for (seg_key,seg) in self.buffer.iter() {
+			let seg_key_bytes = match seg_key.convert_to_bytes() {
+				Ok(bytes) => bytes,
+				Err(_) => return Err(BufErr::FailedSegKeySer),
+			};
+			let seg_bytes = match seg.value.convert_to_bytes() {
+				Ok(bytes) => bytes,
+				Err(_) => return Err(BufErr::FailedSegSer),
+			};
+
+			match self.file_manager.fm_write(seg_key_bytes,seg_bytes) {
+				Err(_) => return Err(BufErr::FileManagerErr),
+				_ => (),
+			}
+		}
+
+		Ok(())
+	}
+
+	fn flush(&mut self) {
+		self.buffer.clear();
+		self.done = true;
+	}
+
+
+	fn exceed_threshold(&self, threshold: f32) -> bool {
+		//println!("{}full, threshold:{}",(self.buffer.len() as f32 / self.buf_size as f32), threshold);
+		return (self.cur_size as f32 / self.budget as f32) >= threshold;
+	}
+
+	fn remove_segment(&mut self) -> Result<Segment<T>,BufErr> {
+		match self.head {
+			None => {
+				return Err(BufErr::BufEmpty)
+			},
+			Some(head) => {
+				match self.get(head){
+					Some(v) => {
+						return Ok(v);
+					}
+					None => {
+						return Err(BufErr::GetFail)
+					}
+				}
+			},
+		}
+	}
+
+	fn idle_threshold(&self, threshold: f32) -> bool {
+		//println!("{}full, threshold:{}",(self.buffer.len() as f32 / self.buf_size as f32), threshold);
+		return (self.cur_size as f32 / self.budget as f32) < threshold;
+	}
+
+	fn exceed_batch(&self, batchsize: usize) -> bool {
+		return self.buffer.len() >= batchsize;
+	}
+}
+
+
+impl<T,U> LRUBuffer<T,U>
+	where T: Copy + Send + Serialize + DeserializeOwned + Debug,
+		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
+{
+	pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T,U> {
+		LRUBuffer {
+			budget: budget,
+			cur_size: 0,
+			head: None,
+			tail: None,
+			buffer: BTreeMap::new(),
+			file_manager: file_manager,
+			buf_size: 0,
+			done: false,
+		}
+	}
+
+	fn push_back_node(&mut self, key: SegmentKey, value: Segment<T>) {
+		let size = value.get_byte_size().unwrap();
+		let mut node = Node {
+			next: None,
+			prev: self.tail,
+			value,
+		};
+		match self.tail {
+			None => self.head = Some(key),
+			Some(tail) => self.buffer.get_mut(&tail).unwrap().next = Some(key),
+		}
+		self.tail = Some(key);
+		self.buffer.insert(key, node);
+		self.cur_size += size;
+		self.buf_size += 1;
+	}
+
+	fn pop_front_node(&mut self) {
+		self.head.map(|key| {
+			let c = self.buffer.get(&key);
+			let size = c.unwrap().value.get_byte_size().unwrap();
+			self.head = c.unwrap().next;
+			match self.head {
+				None => {
+					self.tail = None;
+				}
+				Some(head) => self.buffer.get_mut(&head).unwrap().prev = None,
+			}
+			self.cur_size -= size;
+			self.buf_size -= 1;
+			self.buffer.remove(&key);
+			key
+		});
+	}
+
+
+	fn unlink_node(&mut self, key: SegmentKey, c: &Node<T>) {
+		match c.prev {
+			Some(prev) => {
+				let prev_cache = self.buffer.get_mut(&prev).unwrap();
+				prev_cache.next = c.next;
+			}
+			None => self.head = c.next,
+		};
+		match c.next {
+			Some(next) => {
+				let next_cache = self.buffer.get_mut(&next).unwrap();
+				next_cache.prev = c.prev;
+			}
+			None => self.tail = c.prev,
+		};
+		self.cur_size -= self.buffer.get(&key).unwrap().value.get_byte_size().unwrap();
+		self.buf_size -= 1;
+		self.buffer.remove(&key);
+
+	}
+	pub fn get(&mut self, key: SegmentKey) -> Option<Segment<T>> {
+		match self.buffer.entry(key) {
+			std::collections::btree_map::Entry::Occupied(mut x) => {
+				/*
+                已经存在的情况下,先移除旧的,然后添加新的到尾部
+                */
+				//移除旧的
+				let c = x.get().clone(); //否则会出现连续两次mut借用的情况,第一次发生在Occupied,第二次发生在unlink_node
+				self.unlink_node(key, &c);
+				self.push_back_node(key, c.value.clone());
+				Some(c.value)
+			}
+			std::collections::btree_map::Entry::Vacant(_) => None,
+		}
+	}
+
+	pub fn put(&mut self, key: SegmentKey, value: Segment<T>) {
+		match self.get(key) {
+			Some(v) => {
+				self.cur_size -= v.get_byte_size().unwrap();
+				let size = value.get_byte_size().unwrap();
+				self.buffer.get_mut(&key).unwrap().value = value;
+				self.cur_size += size;
+				return;
+			}
+			None => {
+			}
+
+		}
+		self.push_back_node(key, value);
+	}
+
+
+	fn put_with_key(&mut self, key: SegmentKey, seg: Segment<T>) -> Result<(), BufErr> {
+
+		match self.get(key) {
+			Some(v) => {
+				self.cur_size -= v.get_byte_size().unwrap();
+				let size = &seg.get_byte_size().unwrap();
+				self.buffer.get_mut(&key).unwrap().value = seg;
+				self.cur_size += size;
+				return Ok(());
+			}
+			None => {
+			}
+
+		}
+		self.push_back_node(key, seg);
+		println!("buffer total bytes: {}",self.cur_size);
+		Ok(())
+	}
+
+	/* Gets the segment from the filemanager and places it in */
+	fn retrieve(&mut self, key: SegmentKey) -> Result<bool,BufErr> {
+		if let Some(_) = self.get(key) {
+			println!("reading from the buffer");
+			return Ok(true);
+		}
+		println!("reading from the file_manager");
+		match key.convert_to_bytes() {
+			Ok(key_bytes) => {
+				match self.file_manager.fm_get(key_bytes) {
+					Err(_) => Err(BufErr::FileManagerErr),
+					Ok(None) => Ok(false),
+					Ok(Some(bytes)) => {
+						match Segment::convert_from_bytes(&bytes) {
+							Ok(seg) => {
+								self.put_with_key(key,seg)?;
+								Ok(true)
+							}
+							Err(()) => Err(BufErr::ByteConvertFail),
+						}
+					}
+				}
+			}
+			Err(_) => Err(BufErr::ByteConvertFail)
+		}
+	}
+
+
 }

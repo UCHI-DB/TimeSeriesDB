@@ -60,6 +60,8 @@ pub const PREC_DELTA:f64 = 0.000005f64;
 pub const TEST_FILE:&str = "../UCRArchive2018/Kernel/randomwalkdatasample1k-40k";
 
 
+
+
 pub trait CompressionMethod<T> {
 
 

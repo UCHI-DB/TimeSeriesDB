@@ -305,7 +305,7 @@ impl ScaledSliceCompress {
             }
         }
         let duration2 = start2.elapsed();
-        println!("Time elapsed in writing double function() is: {:?}", duration2);
+        // println!("Time elapsed in writing double function() is: {:?}", duration2);
 
 
         // println!("total number of dec is: {}", j);

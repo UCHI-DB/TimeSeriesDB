@@ -42,19 +42,30 @@ use crate::dictionary::{DictionaryId};
  */
 #[derive(Clone,Debug,Serialize,Deserialize, PartialEq)]
 pub enum Methods {
-    Fourier,
+    Uncompr,    // 0
+    Gorilla,
+    Sprintz (usize),
+    Gzip,
+    Snappy,
+    Buff,
+    Paa (usize),
+    Fourier (f64),
     Kernel (DictionaryId),
     SparseLearning (DictionaryId),
     DeepLearning (String),
 }
 
+
+
+
 impl fmt::Display for Methods {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Methods::Fourier => write!(f, "Fourier"),
+            Methods::Fourier (ratio) => write!(f,"{}", format!("Fourier w/ DictionaryId {:?}", ratio)),
             Methods::Kernel (id) => write!(f, "{}", format!("Kernel w/ DictionaryId {:?}", id)),
             Methods::SparseLearning (id) => write!(f, "{}", format!("Sparse Learning w/ DictionaryId {:?}", id)),
-            Methods::DeepLearning (file) => write!(f, "{}", format!("Deep Learning w/ file {:?}", file))
+            Methods::DeepLearning (file) => write!(f, "{}", format!("Deep Learning w/ file {:?}", file)),
+            _ => todo!()
         }
     }
 }
