@@ -80,6 +80,7 @@ pub struct Segment<T> {
 	timestamp: SystemTime,
 	signal: SignalId,
 	data: Vec<T>,
+	binary: Option<Vec<u8>>,
 	time_lapse: Option<Vec<Duration>>,
 	prev_seg_offset: Option<Duration>,
 	//next_seg_offset: Option<Duration>,
@@ -94,6 +95,7 @@ impl<T> Segment<T> {
 			timestamp: timestamp,
 			signal: signal,
 			data: data,
+			binary: None,
 			time_lapse: time_lapse,
 			prev_seg_offset: next_seg_offset
 		}
@@ -117,6 +119,28 @@ impl<T> Segment<T> {
 	pub fn get_data(&self) ->  &Vec<T>
 	{
 		&self.data
+	}
+
+	pub fn set_data(&mut self,data: Vec<T>){
+		self.data = data;
+	}
+
+	pub fn get_comp(&self) ->   &Option<Vec<u8>>
+	{
+		&self.binary
+	}
+
+	pub fn set_comp(&mut self,v: Vec<u8>){
+		self.binary = Some(v);
+	}
+
+	pub fn get_method(&self) ->  &Option<Methods>
+	{
+		&self.method
+	}
+
+	pub fn set_method(&mut self, m : Methods) {
+		self.method = Some(m);
 	}
 }
 
@@ -272,6 +296,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			timestamp: self.timestamp,
 			signal: self.signal,
 			data: output,
+			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 		}
@@ -305,6 +330,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			timestamp: self.timestamp,
 			signal: self.signal,
 			data: output,
+			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 		}
@@ -338,6 +364,7 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			timestamp: self.timestamp,
 			signal: self.signal,
 			data: output,
+			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 		}
@@ -359,6 +386,7 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			timestamp: self.timestamp,
 			signal: self.signal,
 			data: output,
+			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 		}
@@ -456,6 +484,7 @@ pub fn paa_compress_and_retain<T>(seg: &Segment<T>, chunk_size: usize) -> Segmen
 		timestamp: seg.timestamp,
 		signal: seg.signal,
 		data: paa_data,
+		binary: None,
 		time_lapse: seg.time_lapse.clone(),
 		prev_seg_offset: seg.prev_seg_offset,
 	}	
@@ -473,7 +502,8 @@ pub fn paa_compress<T>(seg: &mut Segment<T>, chunk_size: usize)
 						   })
 						   .collect();
 //	println!("paa finished with length {}",paa_data.len());
-	seg.data = paa_data	
+	seg.data = paa_data;
+	seg.method = Some(Methods::Paa(chunk_size));
 }
 
 // todo: restruct the code blocks into compression folder

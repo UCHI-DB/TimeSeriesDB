@@ -7,6 +7,7 @@ use std::time::Instant;
 use crate::methods::compress::CompressionMethod;
 use std::slice::Iter;
 use my_bit_vec::BitVec;
+use crate::methods::Methods;
 
 #[derive(Clone)]
 pub struct SprintzDoubleCompress {
@@ -342,7 +343,10 @@ impl<'a, T> CompressionMethod<T> for SprintzDoubleCompress
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
         let start = Instant::now();
         for seg in segs {
-            self.encode(seg);
+            let binary =  self.encode(seg);
+            seg.set_comp(binary);
+            seg.set_data(Vec::new());
+            seg.set_method(Methods::Sprintz(self.scale));
         }
 
         let duration = start.elapsed();

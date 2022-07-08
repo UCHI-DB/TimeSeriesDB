@@ -181,9 +181,10 @@ impl<T,U,F,G> Future for BufferedSignal<T,U,F,G>
 							};
 							// println!("new vec for matrix length: {}", batch_vec.len());
 						}
-
+						// todo: remove time lapse and dur_offset
+						// let mut seg = Segment::new(None,old_timestamp.unwrap(),self.signal_id, data, Some(time_lapse), dur_offset);
 						let mut seg = Segment::new(None,old_timestamp.unwrap(),self.signal_id,
-											   data, Some(time_lapse), dur_offset);
+											   data, None, None);
 						
 						if self.compress_on_segmentation {
 							let before = self.data.len() as f64;
@@ -325,6 +326,7 @@ impl<T,U,F,G> Future for NonStoredSignal<T,U,F,G>
 							}
 							None => None,
 						};
+
 
 						let mut seg = Segment::new(None,old_timestamp.unwrap(),self.signal_id,
 											   data, Some(time_lapse), dur_offset);

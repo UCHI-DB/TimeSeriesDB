@@ -94,6 +94,8 @@ pub trait SegmentBuffer<T: Copy + Send> {
 	 */
 	fn idle_threshold(&self, threshold: f32) -> bool;
 
+	fn get_buffer_size(&self) -> usize;
+
 	/* Signal done*/
 	fn is_done(&self)->bool;
 }
@@ -222,6 +224,10 @@ impl<T,U> SegmentBuffer<T> for ClockBuffer<T,U>
 	}
 
 	fn idle_threshold(&self, threshold: f32) -> bool {
+		unimplemented!()
+	}
+
+	fn get_buffer_size(&self) -> usize{
 		unimplemented!()
 	}
 
@@ -467,6 +473,11 @@ impl<T> SegmentBuffer<T> for NoFmClockBuffer<T>
 		unimplemented!()
 	}
 
+	fn get_buffer_size(&self) -> usize{
+		unimplemented!()
+	}
+
+
 	fn remove_segment(&mut self) -> Result<Segment<T>,BufErr> {
 		let mut counter = 0;
 		loop {
@@ -682,6 +693,11 @@ impl<T,U> SegmentBuffer<T> for LRUBuffer<T,U>
 		return (self.cur_size as f32 / self.budget as f32) >= threshold;
 	}
 
+	fn get_buffer_size(&self) -> usize{
+		self.cur_size
+	}
+
+
 	fn remove_segment(&mut self) -> Result<Segment<T>,BufErr> {
 		match self.head {
 			None => {
@@ -832,7 +848,6 @@ impl<T,U> LRUBuffer<T,U>
 
 		}
 		self.push_back_node(key, seg);
-		println!("buffer total bytes: {}",self.cur_size);
 		Ok(())
 	}
 

@@ -37,7 +37,8 @@ mod stats;
 mod btree;
 mod lcce;
 pub mod kernel;
-pub mod compression_demon;
+pub mod compression_daemon;
+pub mod recoding_daemon;
 
 use rand::prelude::*;
 use rand::distributions::Uniform;
@@ -66,7 +67,7 @@ use ndarray::Array2;
 use rustfft::FFTnum;
 use num::Float;
 use ndarray_linalg::Lapack;
-use crate::compression_demon::CompressionDemon;
+use crate::compression_daemon::CompressionDaemon;
 use std::thread;
 use crate::kernel::Kernel;
 use crate::methods::compress::{GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, CompressionMethod};
@@ -399,11 +400,11 @@ pub fn run_test<T: 'static>(config_file: &str)
 	let mut kernel = Kernel::new(testdict.clone().unwrap(),1,4,30);
 	kernel.dict_pre_process();
 
-//    let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf_option.unwrap().clone(),*compre_buf_option.unwrap().clone(),None,0.1,0.1,|x|(paa_compress(x,50)));
-// 	let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,kernel);
-	// let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,PAACompress::new(10,10));
-	let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,FourierCompress::new(10,1,1.0));
-//	let mut compress_demon2:CompressionDemon<_,DB,_> = CompressionDemon::new(*buf2.unwrap(),*comp_buf2.unwrap(),None,0.1,0.1,FourierCompress::new(10,1));
+//    let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*buf_option.unwrap().clone(),*compre_buf_option.unwrap().clone(),None,0.1,0.1,|x|(paa_compress(x,50)));
+// 	let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,kernel);
+	// let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,PAACompress::new(10,10));
+	let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*buf.unwrap(),*comp_buf.unwrap(),None,0.1,0.1,FourierCompress::new(10,1,1.0));
+//	let mut compress_daemon2:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*buf2.unwrap(),*comp_buf2.unwrap(),None,0.1,0.1,FourierCompress::new(10,1));
 
 	/* Construct the runtime */
 	let rt = match config.lookup("runtime") {
@@ -434,8 +435,8 @@ pub fn run_test<T: 'static>(config_file: &str)
 
 	let handle = thread::spawn(move || {
 		println!("Run compression demon" );
-		compress_demon.run();
-		println!("segment commpressed: {}", compress_demon.get_processed() );
+		compress_daemon.run();
+		println!("segment commpressed: {}", compress_daemon.get_processed() );
 	});
 
 	let executor = rt.executor();
@@ -450,14 +451,14 @@ pub fn run_test<T: 'static>(config_file: &str)
 
 //	let handle1 = thread::spawn(move || {
 //		println!("Run compression demon 1" );
-//		compress_demon1.run();
-//		println!("segment commpressed: {}", compress_demon1.get_processed() );
+//		compress_daemon1.run();
+//		println!("segment commpressed: {}", compress_daemon1.get_processed() );
 //	});
 //
 //	let handle2 = thread::spawn(move || {
 //		println!("Run compression demon 2" );
-//		compress_demon2.run();
-//		println!("segment commpressed: {}", compress_demon2.get_processed() );
+//		compress_daemon2.run();
+//		println!("segment commpressed: {}", compress_daemon2.get_processed() );
 //	});
 
 	for sh in spawn_handles {
@@ -823,47 +824,47 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 	for x in 0..num_comp {
 		match comp{
 			"paa" => {
-				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,PAACompress::new(10,batch));
+				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,PAACompress::new(10,batch));
 				let handle = thread::spawn(move || {
 					println!("Run compression demon" );
-					compress_demon.run();
-					println!("segment commpressed: {}", compress_demon.get_processed() );
+					compress_daemon.run();
+					println!("segment commpressed: {}", compress_daemon.get_processed() );
 				});
 				comp_handlers.push(handle);
 			},
 			"fourier" => {
-				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, FourierCompress::new(10, batch,1.0));
+				let mut compress_daemon: CompressionDaemon<_, DB, _> = CompressionDaemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, FourierCompress::new(10, batch,1.0));
 				let handle = thread::spawn(move || {
 					println!("Run compression demon" );
-					compress_demon.run();
-					println!("segment commpressed: {}", compress_demon.get_processed() );
+					compress_daemon.run();
+					println!("segment commpressed: {}", compress_daemon.get_processed() );
 				});
 				comp_handlers.push(handle);
 			}
 			"snappy" => {
-				let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SnappyCompress::new(10, batch));
+				let mut compress_daemon: CompressionDaemon<_, DB, _> = CompressionDaemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SnappyCompress::new(10, batch));
 				let handle = thread::spawn(move || {
 					println!("Run compression demon" );
-					compress_demon.run();
-					println!("segment commpressed: {}", compress_demon.get_processed() );
+					compress_daemon.run();
+					println!("segment commpressed: {}", compress_daemon.get_processed() );
 				});
 				comp_handlers.push(handle);
 			}
 			// "sprintz" => {
-			// 	let mut compress_demon: CompressionDemon<_, DB, _> = CompressionDemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SprintzDoubleCompress::new(10, batch,10000));
+			// 	let mut compress_daemon: CompressionDaemon<_, DB, _> = CompressionDaemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SprintzDoubleCompress::new(10, batch,10000));
 			// 	let handle = thread::spawn(move || {
 			// 		println!("Run compression demon" );
-			// 		compress_demon.run();
-			// 		println!("segment commpressed: {}", compress_demon.get_processed() );
+			// 		compress_daemon.run();
+			// 		println!("segment commpressed: {}", compress_daemon.get_processed() );
 			// 	});
 			// 	comp_handlers.push(handle);
 			// }
 			"gzip" => {
-				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,GZipCompress::new(10,batch));
+				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,GZipCompress::new(10,batch));
 				let handle = thread::spawn(move || {
 					println!("Run compression demon" );
-					compress_demon.run();
-					println!("segment commpressed: {}", compress_demon.get_processed() );
+					compress_daemon.run();
+					println!("segment commpressed: {}", compress_daemon.get_processed() );
 				});
 				comp_handlers.push(handle);
 			}
@@ -874,11 +875,11 @@ pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
 					knl = Kernel::new(testdict.clone().unwrap(),1,4,30);
 					knl.rbfdict_pre_process();
 				}
-				let mut compress_demon:CompressionDemon<_,DB,_> = CompressionDemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,knl);
+				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,knl);
 				let handle = thread::spawn(move || {
 					println!("Run compression demon" );
-					compress_demon.run();
-					println!("segment commpressed: {}", compress_demon.get_processed() );
+					compress_daemon.run();
+					println!("segment commpressed: {}", compress_daemon.get_processed() );
 				});
 				comp_handlers.push(handle);
 			}

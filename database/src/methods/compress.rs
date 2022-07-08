@@ -50,6 +50,7 @@ use crate::compress::PRECISION_MAP;
 use self::tsz::{Encode, Decode};
 use std::slice::Iter;
 use my_bit_vec::BitVec;
+use crate::methods::Methods;
 
 pub const TYPE_LEN:usize = 8usize;
 pub const SCALE: f64 = 1.0f64;
@@ -526,7 +527,13 @@ impl<'a, T> CompressionMethod<T> for GZipCompress
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
         let start = Instant::now();
         for seg in segs {
-            self.encode(seg);
+            // println!("{}, original size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
+
+            let binary =  self.encode(seg);
+            seg.set_comp(binary);
+            seg.set_data(Vec::new());
+            seg.set_method(Methods::Gzip);
+            // println!("{}, compressed size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
         }
 
         let duration = start.elapsed();
@@ -918,7 +925,13 @@ impl<'a, T> CompressionMethod<T> for SnappyCompress
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
         let start = Instant::now();
         for seg in segs {
-            self.encode(seg);
+            // println!("{}, original size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
+
+            let binary =  self.encode(seg);
+            seg.set_comp(binary);
+            seg.set_data(Vec::new());
+            seg.set_method(Methods::Snappy);
+            // println!("{}, compressed size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
         }
         let duration = start.elapsed();
         info!("Time elapsed in Snappy function() is: {:?}", duration);

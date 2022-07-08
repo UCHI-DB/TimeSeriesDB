@@ -11,7 +11,7 @@ use crate::methods::compress::CompressionMethod;
 use std::any::Any;
 use crate::buffer_pool::BufErr::BufEmpty;
 
-pub struct CompressionDemon<T,U,F> 
+pub struct CompressionDaemon<T,U,F>
 	where T: Copy + Send + Serialize + DeserializeOwned,
 	      U: FileManager<Vec<u8>,DBVector> + Sync + Send,
 		  F: CompressionMethod<T>
@@ -25,7 +25,7 @@ pub struct CompressionDemon<T,U,F>
 	compress_method: F,
 }
 
-impl<T,U,F> CompressionDemon<T,U,F> 
+impl<T,U,F> CompressionDaemon<T,U,F>
 	where T: Copy + Send + Serialize + DeserializeOwned,
 		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
 		  F: CompressionMethod<T>
@@ -34,9 +34,9 @@ impl<T,U,F> CompressionDemon<T,U,F>
 			   comp_seg_buf: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
 			   file_manager: Option<U>,
 			   comp_threshold: f32, uncomp_threshold: f32, compress_method: F)
-			   -> CompressionDemon<T,U,F>
+			   -> CompressionDaemon<T,U,F>
 	{
-		CompressionDemon {
+		CompressionDaemon {
 			seg_buf: seg_buf,
 			comp_seg_buf: comp_seg_buf,
 			file_manager: file_manager,
@@ -99,6 +99,7 @@ impl<T,U,F> CompressionDemon<T,U,F>
 						Err(_) => return Err(BufErr::FailPut),
 					}
 				}
+				println!("buffer total bytes: {}",buf.get_buffer_size());
 				return Ok(());
 			}
 			Err(_) => Err(BufErr::CantGrabMutex),
