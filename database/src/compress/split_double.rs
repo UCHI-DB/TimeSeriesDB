@@ -21,6 +21,8 @@ use std::io::{Write};
 use crate::compress::PRECISION_MAP;
 use std::slice::Iter;
 use my_bit_vec::BitVec;
+use num::FromPrimitive;
+use crate::methods::Methods;
 
 pub const SAMPLE:usize = 2000usize;
 pub const OUTLIER_R:f32 = 0.1f32;
@@ -4014,6 +4016,54 @@ impl SplitBDDoubleCompress {
             // }
             // j += 1;
             expected_datapoints.push(cur_intf + (dec as f64) / dec_scl);
+        }
+        println!("Number of scan items:{}", expected_datapoints.len());
+        expected_datapoints
+    }
+
+    pub fn decode_general<T>(&self, bytes: &Vec<u8>) -> Vec<T>
+    where T: FromPrimitive{
+        let prec = (self.scale as f32).log10() as i32;
+        let prec_delta = get_precision_bound(prec);
+
+        let mut bitpack = BitPack::<&[u8]>::new(bytes.as_slice());
+        let mut bound = PrecisionBound::new(prec_delta);
+        let ubase_int = bitpack.read(32).unwrap();
+        let base_int = unsafe { mem::transmute::<u32, i32>(ubase_int) };
+        println!("base integer: {}",base_int);
+        let len = bitpack.read(32).unwrap();
+        println!("total vector size:{}",len);
+        let ilen = bitpack.read(32).unwrap();
+        println!("bit packing length:{}",ilen);
+        let dlen = bitpack.read(32).unwrap();
+        bound.set_length(ilen as u64, dlen as u64);
+        // check integer part and update bitmap;
+        let mut cur;
+
+        let mut expected_datapoints = Vec::new();
+        let mut int_vec:Vec<i32> = Vec::new();
+
+        for i in 0..len {
+            cur = bitpack.read(ilen as usize).unwrap();
+            // if i<10{
+            //     println!("{}th value: {}",i,cur);
+            // }
+            int_vec.push(cur as i32 + base_int);
+        }
+
+        let mut dec = 0;
+        let dec_scl = 2.0f64.powi(dlen as i32);
+        println!("Scale for decimal:{}", dec_scl);
+        let mut j = 0;
+        let mut cur_intf = 0f64;
+        for int_comp in int_vec{
+            cur_intf = int_comp as f64;
+            dec = bitpack.read(dlen as usize).unwrap();
+            // if j<10{
+            //     println!("{}th item {}, decimal:{}",j, cur_intf + (dec as f64) / dec_scl,dec);
+            // }
+            // j += 1;
+            expected_datapoints.push(FromPrimitive::from_f64(cur_intf + (dec as f64) / dec_scl).unwrap());
         }
         println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
@@ -8510,7 +8560,7 @@ impl SplitBDDoubleCompress {
 }
 
 impl<'a, T> CompressionMethod<T> for SplitBDDoubleCompress
-    where T: Serialize + Clone+ Copy+Into<f64>+ Deserialize<'a>{
+    where T: Serialize + Clone+ Copy+Into<f64>+ Deserialize<'a>+ FromPrimitive{
     fn get_segments(&self) {
         unimplemented!()
     }
@@ -8522,14 +8572,22 @@ impl<'a, T> CompressionMethod<T> for SplitBDDoubleCompress
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
         // let start = Instant::now();
         for seg in segs {
-            self.byte_fixed_encode(seg);
+            let binary =  self.byte_fixed_encode(seg);
+            seg.set_comp(Some(binary));
+            seg.set_data(Vec::new());
+            seg.set_method(Methods::Buff(self.scale));
+
         }
         // let duration = start.elapsed();
         // info!("Time elapsed in splitBD function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
-        unimplemented!()
+    fn run_decompress(&self, seg: &mut Segment<T>) {
+        let vec =  self.decode_general(seg.get_comp());
+        seg.set_comp(None);
+        seg.set_data(vec);
+        seg.set_method(Methods::Buff(self.scale));
+
     }
 }
 

@@ -399,7 +399,7 @@ impl<'a, T> CompressionMethod<T> for GorillaCompress
         info!("Time elapsed in Gorilla function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }
@@ -798,7 +798,7 @@ impl<'a, T> CompressionMethod<T> for GorillaBDCompress
         info!("Time elapsed in GorillaBD function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }

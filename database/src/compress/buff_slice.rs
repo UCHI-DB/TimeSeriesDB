@@ -1987,7 +1987,7 @@ impl<'a, T> CompressionMethod<T> for BuffSliceCompress
         info!("Time elapsed in buff-slice function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, seg: &mut Segment<T>) {
         unimplemented!()
     }
 }

@@ -842,7 +842,7 @@ pub fn run_gzip_encoding_decoding(test_file:&str, scl:usize,pred: f64) {
     println!("Time elapsed in gzip compress function() is: {:?}", duration1);
     //test_grilla_compress_on_file::<f64>(TEST_FILE);
     let start2 = Instant::now();
-    comp.decode(compressed);
+    comp.decode::<f64>(&compressed);
     let duration2 = start2.elapsed();
     println!("Time elapsed in gzip decompress function() is: {:?}", duration2);
     let start3 = Instant::now();
@@ -896,7 +896,7 @@ pub fn run_snappy_encoding_decoding(test_file:&str, scl:usize,pred: f64) {
     println!("Time elapsed in snappy compress function() is: {:?}", duration1);
     //test_grilla_compress_on_file::<f64>(TEST_FILE);
     let start2 = Instant::now();
-    comp.decode(compressed);
+    comp.decode::<f64>(&compressed);
     let duration2 = start2.elapsed();
     println!("Time elapsed in snappy decompress function() is: {:?}", duration2);
     let start3 = Instant::now();

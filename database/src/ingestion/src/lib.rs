@@ -51,6 +51,7 @@ use futures::sync::oneshot;
 use std::sync::{Arc,Mutex};
 use serde::Serialize;
 use time_series_start::compress::split_double::SplitBDDoubleCompress;
+use time_series_start::recoding_daemon::RecodingDaemon;
 
 
 const DEFAULT_BUF_SIZE: usize = 150;
@@ -123,6 +124,11 @@ pub fn run_single_test(config_file: &str, comp:&str, num_comp:i32, num_recode: i
 		None => DEFAULT_BUF_SIZE,
 	};
 
+	let buffer_budget = match config.lookup("comp_buffer") {
+		Some(value) => value.lookup("buffer_budget").map_or(DEFAULT_BUF_SIZE, |v| v.as_integer().expect("The buffer size should be provided as an integer") as usize),
+		None => DEFAULT_BUF_SIZE,
+	};
+
 	let buf_option: Option<Box<Arc<Mutex<(SegmentBuffer<f64> + Send + Sync)>>>> = match fm {
 		Some(fm) => {
 			match config.lookup("buffer") {
@@ -158,7 +164,7 @@ pub fn run_single_test(config_file: &str, comp:&str, num_comp:i32, num_recode: i
 					let buf_type = config.lookup("type").expect("A buffer type must be provided");
 					match buf_type.as_str().expect("Buffer type must be provided as string") {
 						"Clock" => Some(Box::new(Arc::new(Mutex::new(ClockBuffer::<f64,rocksdb::DB>::new(buffer_size,*fm))))),
-						"LRU" => Some(Box::new(Arc::new(Mutex::new(LRUBuffer::<f64,rocksdb::DB>::new(buffer_size,*fm))))),
+						"LRU" => Some(Box::new(Arc::new(Mutex::new(LRUBuffer::<f64,rocksdb::DB>::new(buffer_budget,*fm))))),
 						x => panic!("The buffer type, {:?}, is not currently supported to run with a file manager", x),
 					}
 				}
@@ -473,79 +479,13 @@ pub fn run_single_test(config_file: &str, comp:&str, num_comp:i32, num_recode: i
 	}
 
 	for _x in 0..num_recode {
-		match comp{
-			"paa" => {
-				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,PAACompress::new(10,batch));
-				let handle = thread::spawn(move || {
-					println!("Run compression demon" );
-					compress_daemon.run();
-					println!("segment commpressed: {}", compress_daemon.get_processed() );
-				});
-				comp_handlers.push(handle);
-			},
-			"buff" => {
-				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,SplitBDDoubleCompress::new(10,batch, 10000));
-				let handle = thread::spawn(move || {
-					println!("Run compression demon" );
-					compress_daemon.run();
-					println!("segment commpressed: {}", compress_daemon.get_processed() );
-				});
-				comp_handlers.push(handle);
-			},
-			"fourier" => {
-				let mut compress_daemon: CompressionDaemon<_, DB, _> = CompressionDaemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, FourierCompress::new(10, batch,1.0));
-				let handle = thread::spawn(move || {
-					println!("Run compression demon" );
-					compress_daemon.run();
-					println!("segment commpressed: {}", compress_daemon.get_processed() );
-				});
-				comp_handlers.push(handle);
-			}
-			"snappy" => {
-				let mut compress_daemon: CompressionDaemon<_, DB, _> = CompressionDaemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SnappyCompress::new(10, batch));
-				let handle = thread::spawn(move || {
-					println!("Run compression demon" );
-					compress_daemon.run();
-					println!("segment commpressed: {}", compress_daemon.get_processed() );
-				});
-				comp_handlers.push(handle);
-			}
-			"sprintz" => {
-				let mut compress_daemon: CompressionDaemon<_, DB, _> = CompressionDaemon::new(*(buf_option.clone().unwrap()), *(compre_buf_option.clone().unwrap()), None, 0.1, 0.0, SprintzDoubleCompress::new(10, batch,10000));
-				let handle = thread::spawn(move || {
-					println!("Run compression demon" );
-					compress_daemon.run();
-					println!("segment commpressed: {}", compress_daemon.get_processed() );
-				});
-				comp_handlers.push(handle);
-			}
-			"gzip" => {
-				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,GZipCompress::new(10,batch));
-				let handle = thread::spawn(move || {
-					println!("Run compression demon" );
-					compress_daemon.run();
-					println!("segment commpressed: {}", compress_daemon.get_processed() );
-				});
-				comp_handlers.push(handle);
-			}
-
-			"kernel" => {
-				let mut knl = Kernel::new(array![[1.0, 1.0],[1.0, 1.0]],1,4,30);
-				if testdict != None{
-					knl = Kernel::new(testdict.clone().unwrap(),1,4,30);
-					knl.rbfdict_pre_process();
-				}
-				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,knl);
-				let handle = thread::spawn(move || {
-					println!("Run compression demon" );
-					compress_daemon.run();
-					println!("segment commpressed: {}", compress_daemon.get_processed() );
-				});
-				comp_handlers.push(handle);
-			}
-			_ => {panic!("Compression not supported yet.")}
-		}
-
+		let mut rec:RecodingDaemon<_,DB,_> = RecodingDaemon::new(*(compre_buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.8,0.8,PAACompress::new(10,batch));
+		let handle = thread::spawn(move || {
+			println!("Run recoding demon" );
+			rec.run();
+			println!("segment recoded: {}", rec.get_processed() );
+		});
+		comp_handlers.push(handle);
 	}
 
 

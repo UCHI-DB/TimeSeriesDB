@@ -83,6 +83,7 @@ pub struct Segment<T> {
 	binary: Option<Vec<u8>>,
 	time_lapse: Option<Vec<Duration>>,
 	prev_seg_offset: Option<Duration>,
+	comp_time: usize
 	//next_seg_offset: Option<Duration>,
 }
 
@@ -97,7 +98,8 @@ impl<T> Segment<T> {
 			data: data,
 			binary: None,
 			time_lapse: time_lapse,
-			prev_seg_offset: next_seg_offset
+			prev_seg_offset: next_seg_offset,
+			comp_time: 0
 		}
 	}
 
@@ -110,6 +112,14 @@ impl<T> Segment<T> {
 			Some(time) => Some(SegmentKey::new(self.timestamp-time,self.signal)),
 			None       => None, 
 		}
+	}
+
+	pub fn get_comp_times(&self) -> usize {
+		self.comp_time
+	}
+
+	pub fn update_comp_times(&mut self) {
+		self.comp_time= self.comp_time+1
 	}
 
 	pub fn get_signal(&self) -> SignalId {
@@ -125,13 +135,13 @@ impl<T> Segment<T> {
 		self.data = data;
 	}
 
-	pub fn get_comp(&self) ->   &Option<Vec<u8>>
+	pub fn get_comp(&self) ->  &Vec<u8>
 	{
-		&self.binary
+		&self.binary.as_ref().unwrap()
 	}
 
-	pub fn set_comp(&mut self,v: Vec<u8>){
-		self.binary = Some(v);
+	pub fn set_comp(&mut self,v: Option<Vec<u8>>){
+		self.binary = v;
 	}
 
 	pub fn get_method(&self) ->  &Option<Methods>
@@ -299,6 +309,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
+			comp_time: 0
 		}
 
 	}
@@ -333,6 +344,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
+			comp_time: 0
 		}
 
 	}
@@ -367,6 +379,7 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
+			comp_time: 0
 		}
 	}
 
@@ -389,6 +402,7 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
+			comp_time: 0
 		}
 	}
 }
@@ -487,6 +501,7 @@ pub fn paa_compress_and_retain<T>(seg: &Segment<T>, chunk_size: usize) -> Segmen
 		binary: None,
 		time_lapse: seg.time_lapse.clone(),
 		prev_seg_offset: seg.prev_seg_offset,
+		comp_time: 0
 	}	
 }
 
@@ -524,10 +539,27 @@ impl PAACompress {
 		return seg.convert_to_bytes().unwrap();
 	}
 
-	pub fn decode<'a,T>(&self, bytes: &'a [u8]) -> Vec<f64>
+	pub fn decode<'a,T>(&self, bytes: &'a [u8]) -> Vec<T>
 		where T: Serialize + Num + FromPrimitive + Clone+ Copy+Into<f64> + Deserialize<'a>{
 		let seg:Segment<T>  = Segment::convert_from_bytes(bytes).unwrap();
 		let vec = seg.get_data();
+		let vsize = vec.len();
+		let mut unpaa: Vec<T> = Vec::new();
+		let mut paa_data = vec.iter();
+
+		let mut val:f64 = 0.0;
+		for i in 0..vsize as i32 {
+			val = (*(paa_data.next().unwrap())).into();
+			for j in 0..self.chunksize{
+				unpaa.push(FromPrimitive::from_f64(val).unwrap());
+			}
+
+		}
+		return unpaa;
+	}
+
+	pub fn decodeVec<T>(&self, vec: &Vec<T>) -> Vec<T>
+		where T: Num + FromPrimitive + Clone+ Copy+Into<f64>{
 		let vsize = vec.len();
 		let mut unpaa = Vec::new();
 		let mut paa_data = vec.iter();
@@ -536,7 +568,7 @@ impl PAACompress {
 		for i in 0..vsize as i32 {
 			val = (*(paa_data.next().unwrap())).into();
 			for j in 0..self.chunksize{
-				unpaa.push(val);
+				unpaa.push(FromPrimitive::from_f64(val).unwrap());
 			}
 
 		}
@@ -610,8 +642,16 @@ impl<T> CompressionMethod<T> for PAACompress
 		}
 	}
 
-	fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+	fn run_single_compress(&self, seg: &mut Segment<T>) {
+		paa_compress(seg,self.chunksize);
+	}
+
+	fn run_decompress(&self, seg: &mut Segment<T>) {
 		unimplemented!()
+		// let vec =  self.decodeVec(seg.get_data());
+		// seg.set_comp(None);
+		// seg.set_data(vec);
+		// seg.set_method(Methods::Gzip);
 	}
 }
 
@@ -694,7 +734,7 @@ impl<'a,T> CompressionMethod<T> for FourierCompress
 		}
 	}
 
-	fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+	fn run_decompress(&self, seg: &mut Segment<T>) {
 		unimplemented!()
 	}
 }

@@ -231,7 +231,7 @@ impl<T> CompressionMethod<T> for Kernel<T>
         self.rbfrun(x);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, seg: &mut Segment<T>) {
         unimplemented!()
     }
 }

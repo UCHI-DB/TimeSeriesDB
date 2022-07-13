@@ -6,10 +6,14 @@ use rocksdb::DBVector;
 use crate::file_handler::{FileManager};
 use std::collections::vec_deque::Drain;
 use std::collections::hash_map::{HashMap,Entry};
+use std::ops::Add;
+use num::{FromPrimitive, Num, zero};
 
-use crate::segment;
+use crate::{CompressionMethod, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
 
 use segment::{Segment,SegmentKey};
+use crate::compress::split_double::SplitBDDoubleCompress;
+use crate::methods::Methods;
 
 /* 
  * Overview:
@@ -599,6 +603,7 @@ pub struct LRUBuffer<T,U>
 	head: Option<SegmentKey>,
 	tail: Option<SegmentKey>,
 	buffer: BTreeMap<SegmentKey,Node<T>>,
+	agg_stats: BTreeMap<SegmentKey,AggStats<T>>,
 	file_manager: U,
 	buf_size: usize,
 	done: bool,
@@ -611,6 +616,63 @@ struct Node<T>
 	value: Segment<T>,
 	next: Option<SegmentKey>,
 	prev: Option<SegmentKey>,
+}
+
+
+#[derive(Debug)]
+struct AggStats<T>
+	where T: Copy + Send,{
+	max: T,
+	min: T,
+	sum: T,
+	count: usize
+}
+
+impl<T> AggStats<T> where T: Copy + Send, {
+	pub fn new(max: T, min: T, sum: T, count: usize) -> Self {
+		Self { max, min, sum, count }
+	}
+}
+
+fn Get_AggStats<T:Num + FromPrimitive+ Copy + Send + Into<f64>+ PartialOrd+ Add<T, Output = T>> (seg: &Segment<T>) -> AggStats<T>{
+	let mut vec = Vec::new();
+	match seg.get_method().as_ref().unwrap() {
+		Methods::Sprintz (scale) => {
+			let pre = SprintzDoubleCompress::new(10, 20,*scale);
+			vec= pre.decode_general(seg.get_comp());
+		},
+		Methods::Buff(scale)=> {
+			let pre = SplitBDDoubleCompress::new(10,20, *scale);
+			vec= pre.decode_general(seg.get_comp());
+
+		},
+		Methods::Snappy=> {
+			let pre = SnappyCompress::new(10,20);
+			vec = pre.decode(seg.get_comp());
+		},
+		Methods::Gzip => {
+			let pre = GZipCompress::new(10,20);
+			vec = pre.decode(seg.get_comp());
+		},
+		Methods::Paa(_wsize) => {
+			let cur = PAACompress::new(2,20);
+			vec = cur.decodeVec(seg.get_data());
+		},
+		_ => todo!()
+	}
+
+	let &min = vec.iter().fold(None, |min, x| match min {
+		None => Some(x),
+		Some(y) => Some(if x > y { y } else { x }),
+	}).unwrap();
+	let &max = vec.iter().fold(None, |max, x| match max {
+		None => Some(x),
+		Some(y) => Some(if x > y { x } else { y }),
+	}).unwrap();
+
+	let sum = vec.iter().fold(T::zero(), |sum, &i| sum + i);
+	let count = vec.len();
+	return AggStats::new(max,min,sum,count);
 }
 
 
@@ -689,7 +751,7 @@ impl<T,U> SegmentBuffer<T> for LRUBuffer<T,U>
 
 
 	fn exceed_threshold(&self, threshold: f32) -> bool {
-		//println!("{}full, threshold:{}",(self.buffer.len() as f32 / self.buf_size as f32), threshold);
+		// println!("{}%full, threshold:{}",(self.cur_size as f32 / self.budget as f32 as f32), threshold);
 		return (self.cur_size as f32 / self.budget as f32) >= threshold;
 	}
 
@@ -732,16 +794,19 @@ impl<T,U> LRUBuffer<T,U>
 		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
 {
 	pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T,U> {
+		println!("created LRU comp buffer with budget {} bytes", budget);
 		LRUBuffer {
 			budget: budget,
 			cur_size: 0,
 			head: None,
 			tail: None,
 			buffer: BTreeMap::new(),
+			agg_stats: BTreeMap::new(),
 			file_manager: file_manager,
 			buf_size: 0,
 			done: false,
 		}
+
 	}
 
 	fn push_back_node(&mut self, key: SegmentKey, value: Segment<T>) {
@@ -803,11 +868,8 @@ impl<T,U> LRUBuffer<T,U>
 	pub fn get(&mut self, key: SegmentKey) -> Option<Segment<T>> {
 		match self.buffer.entry(key) {
 			std::collections::btree_map::Entry::Occupied(mut x) => {
-				/*
-                已经存在的情况下,先移除旧的,然后添加新的到尾部
-                */
-				//移除旧的
-				let c = x.get().clone(); //否则会出现连续两次mut借用的情况,第一次发生在Occupied,第二次发生在unlink_node
+
+				let c = x.get().clone();
 				self.unlink_node(key, &c);
 				self.push_back_node(key, c.value.clone());
 				Some(c.value)

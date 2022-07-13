@@ -72,7 +72,11 @@ pub trait CompressionMethod<T> {
 
     fn run_compress<'a>(&self, segs: &mut Vec<Segment<T>>);
 
-	fn run_decompress(&self, segs: &mut Vec<Segment<T>>);
+	fn run_decompress(&self, segs: &mut Segment<T>);
+
+    fn run_single_compress(&self, segs: &mut Segment<T>){
+        unimplemented!();
+    }
 }
 
 #[derive(Clone)]
@@ -117,7 +121,7 @@ impl<T> CompressionMethod<T> for FCMCompress
 //        println!("Time elapsed in BP function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }
@@ -164,7 +168,7 @@ impl<T> CompressionMethod<T> for DFCMCompress
 //        println!("Time elapsed in BP function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }
@@ -233,7 +237,7 @@ impl CompressionMethod<i32> for BPCompress
 //        println!("Time elapsed in BP function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<i32>>) {
+    fn run_decompress(&self, seg: &mut Segment<i32>) {
         unimplemented!()
     }
 }
@@ -280,7 +284,7 @@ impl CompressionMethod<i32> for DeltaBPCompress
 //        println!("Time elapsed in BP function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<i32>>) {
+    fn run_decompress(&self, segs: &mut Segment<i32>) {
         unimplemented!()
     }
 }
@@ -298,7 +302,7 @@ impl GZipCompress {
 
     // Compress a sample string and print it after transformation.
     pub fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
-        where T: Serialize + Deserialize<'a>{
+        where T: Serialize + Deserialize<'a> + FromPrimitive {
         let mut e = GzEncoder::new(Vec::new(), Compression::best());
         let origin_bin =seg.convert_to_bytes().unwrap();
         info!("original size:{}", origin_bin.len());
@@ -321,14 +325,19 @@ impl GZipCompress {
         Ok(s)
     }
 
-    pub(crate) fn decode(&self, bytes: Vec<u8>) -> Vec<f64> {
+    pub(crate) fn decode<T>(&self, bytes: &Vec<u8>) -> Vec<T>
+        where T: FromPrimitive {
         let mut gz = GzDecoder::new(&bytes[..]);
         let mut s:Vec<u8> = Vec::new();
         let ct= gz.read_to_end(&mut s).unwrap();
-        let mut expected_datapoints:Vec<f64> = Vec::new();
+        let mut expected_datapoints  = Vec::new();
         info!("size read:{}, original size:{}", ct, s.len());
         match Segment::convert_from_bytes(&s) {
-            Ok(new_seg) => {expected_datapoints = new_seg.get_data().clone()},
+            Ok(new_seg) => {
+                for &v in new_seg.get_data(){
+                    expected_datapoints.push(FromPrimitive::from_f64(v).unwrap());
+                }
+            },
             _           => panic!("Failed to convert bytes into segment"),
         }
         println!("Number of scan items:{}", expected_datapoints.len());
@@ -515,7 +524,7 @@ impl GZipCompress {
 }
 
 impl<'a, T> CompressionMethod<T> for GZipCompress
-    where T: Serialize + Deserialize<'a>{
+    where T: Serialize + Deserialize<'a> + FromPrimitive{
     fn get_segments(&self) {
         unimplemented!()
     }
@@ -530,7 +539,7 @@ impl<'a, T> CompressionMethod<T> for GZipCompress
             // println!("{}, original size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
 
             let binary =  self.encode(seg);
-            seg.set_comp(binary);
+            seg.set_comp(Some(binary));
             seg.set_data(Vec::new());
             seg.set_method(Methods::Gzip);
             // println!("{}, compressed size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
@@ -540,8 +549,12 @@ impl<'a, T> CompressionMethod<T> for GZipCompress
         info!("Time elapsed in Gzip function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
-        unimplemented!()
+    fn run_decompress(&self, seg: &mut Segment<T>) {
+        let vec =  self.decode(seg.get_comp());
+        seg.set_comp(None);
+        seg.set_data(vec);
+        seg.set_method(Methods::Gzip);
+
     }
 }
 
@@ -601,7 +614,7 @@ impl<'a, T> CompressionMethod<T> for DeflateCompress
         info!("Time elapsed in Deflate function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }
@@ -662,7 +675,7 @@ impl<'a, T> CompressionMethod<T> for ZlibCompress
         println!("Time elapsed in Zlib function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }
@@ -702,15 +715,16 @@ impl SnappyCompress {
         s
     }
 
-    pub(crate) fn decode(&self, bytes: Vec<u8>) -> Vec<f64> {
+    pub(crate) fn decode<T>(&self, bytes: &Vec<u8>) -> Vec<T>
+    where T: FromPrimitive{
         let mut snappy = decompress(bytes.as_slice());
         let mut s = snappy.unwrap();
-        let mut expected_datapoints:Vec<f64> = Vec::new();
+        let mut expected_datapoints = Vec::new();
         match Segment::convert_from_bytes(&s) {
             Ok(new_seg) => {
-                for e in new_seg.get_data() as &Vec<f64>
+                for &e in new_seg.get_data() as &Vec<f64>
                 {
-                    expected_datapoints.push(*e);
+                    expected_datapoints.push(FromPrimitive::from_f64(e).unwrap());
                 }
             },
             _           => panic!("Failed to convert bytes into segment"),
@@ -913,7 +927,7 @@ impl SnappyCompress {
 }
 
 impl<'a, T> CompressionMethod<T> for SnappyCompress
-    where T: Serialize + Deserialize<'a>{
+    where T: Serialize + Deserialize<'a> + FromPrimitive{
     fn get_segments(&self) {
         unimplemented!()
     }
@@ -928,7 +942,7 @@ impl<'a, T> CompressionMethod<T> for SnappyCompress
             // println!("{}, original size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
 
             let binary =  self.encode(seg);
-            seg.set_comp(binary);
+            seg.set_comp(Some(binary));
             seg.set_data(Vec::new());
             seg.set_method(Methods::Snappy);
             // println!("{}, compressed size:{}", seg.get_data().len(), seg.get_byte_size().unwrap());
@@ -937,8 +951,12 @@ impl<'a, T> CompressionMethod<T> for SnappyCompress
         info!("Time elapsed in Snappy function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
-        unimplemented!()
+    fn run_decompress(&self, seg: &mut Segment<T>) {
+        let vec =  self.decode(seg.get_comp());
+        seg.set_comp(None);
+        seg.set_data(vec);
+        seg.set_method(Methods::Snappy);
+
     }
 }
 
@@ -1309,7 +1327,7 @@ impl<'a, T> CompressionMethod<T> for SplitDoubleCompress
 //        println!("Time elapsed in BP function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }
@@ -1486,7 +1504,7 @@ impl<'a, T> CompressionMethod<T> for BPDoubleCompress
 //        println!("Time elapsed in BP function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, segs: &mut Segment<T>) {
         unimplemented!()
     }
 }
@@ -1690,7 +1708,7 @@ pub fn test_deflate_compress_on_int_file(file:&str,scl:i32){
 
 
 pub fn test_gzip_compress_on_file<'a,T>(file:&str)
-    where T: FromStr + Clone+Serialize + Deserialize<'a>{
+    where T: FromStr + Clone+Serialize + Deserialize<'a>+ FromPrimitive{
     let file_iter = construct_file_iterator_skip_newline::<T>(file, 1, ',');
     let file_vec: Vec<T> = file_iter.unwrap().collect();
     let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);

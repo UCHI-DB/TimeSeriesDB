@@ -9,6 +9,7 @@ use crate::file_handler::{FileManager};
 use crate::file_handler;
 use crate::methods::compress::CompressionMethod;
 use std::any::Any;
+use std::time::{SystemTime, UNIX_EPOCH};
 use crate::buffer_pool::BufErr::BufEmpty;
 
 pub struct CompressionDaemon<T,U,F>
@@ -99,7 +100,8 @@ impl<T,U,F> CompressionDaemon<T,U,F>
 						Err(_) => return Err(BufErr::FailPut),
 					}
 				}
-				println!("buffer total bytes: {}",buf.get_buffer_size());
+				println!("buffer total bytes: {},{}",SystemTime::now().duration_since(UNIX_EPOCH)
+					.unwrap().as_micros(),buf.get_buffer_size());
 				return Ok(());
 			}
 			Err(_) => Err(BufErr::CantGrabMutex),

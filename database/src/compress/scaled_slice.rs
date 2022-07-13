@@ -1351,7 +1351,7 @@ impl<'a, T> CompressionMethod<T> for ScaledSliceCompress
         info!("Time elapsed in scaled-slice function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, seg: &mut Segment<T>) {
         unimplemented!()
     }
 }

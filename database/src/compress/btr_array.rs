@@ -316,7 +316,7 @@ impl<'a, T> CompressionMethod<T> for BtrArrayIndex
 //        println!("Time elapsed in sprintz function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
+    fn run_decompress(&self, seg: &mut Segment<T>) {
         unimplemented!()
     }
 }

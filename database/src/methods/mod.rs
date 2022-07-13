@@ -47,7 +47,7 @@ pub enum Methods {
     Sprintz (usize),
     Gzip,
     Snappy,
-    Buff,
+    Buff (usize),
     Paa (usize),
     Fourier (f64),
     Kernel (DictionaryId),

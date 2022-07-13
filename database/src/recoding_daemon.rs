@@ -6,10 +6,17 @@ use crate::segment::Segment;
 use std::sync::{Arc,Mutex};
 use crate::buffer_pool::{SegmentBuffer,ClockBuffer};
 use crate::file_handler::{FileManager};
-use crate::file_handler;
+use crate::{file_handler, GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, PAACompress};
 use crate::methods::compress::CompressionMethod;
 use std::any::Any;
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use num::{FromPrimitive, Num};
 use crate::buffer_pool::BufErr::BufEmpty;
+use crate::methods::Methods;
+use crate::compress::split_double::SplitBDDoubleCompress;
+use crate::compress::sprintz::SprintzDoubleCompress;
+use crate::compress::gorilla::{GorillaBDCompress, GorillaCompress};
 
 pub struct RecodingDaemon<T,U,F>
 	where T: Copy + Send + Serialize + DeserializeOwned,
@@ -26,7 +33,7 @@ pub struct RecodingDaemon<T,U,F>
 }
 
 impl<T,U,F> RecodingDaemon<T,U,F>
-	where T: Copy + Send + Serialize + DeserializeOwned,
+	where T: Copy + Send + Serialize + DeserializeOwned + FromPrimitive + Num+ Into<f64>,
 		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
 		  F: CompressionMethod<T>
 {
@@ -52,9 +59,9 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 		match self.seg_buf.lock() {
 			Ok(mut buf) => {
 				//println!("Lock aquired");
-				if buf.exceed_threshold(self.uncomp_threshold) && buf.exceed_batch(self.compress_method.get_batch()) {
+				if buf.exceed_threshold(self.uncomp_threshold) {
 					let batch_size = self.compress_method.get_batch();
-					//println!("Get segment for compression batch size:{}",batch_size);
+					println!("Get segment for compression batch size:{}",batch_size);
 					let mut segs = Vec::with_capacity(batch_size);
 					loop {
 						match buf.remove_segment(){
@@ -99,7 +106,8 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 						Err(_) => return Err(BufErr::FailPut),
 					}
 				}
-				println!("buffer total bytes: {}",buf.get_buffer_size());
+				println!("buffer total bytes: {},{}",SystemTime::now().duration_since(UNIX_EPOCH)
+					.unwrap().as_micros(),buf.get_buffer_size());
 				return Ok(());
 			}
 			Err(_) => Err(BufErr::CantGrabMutex),
@@ -116,7 +124,7 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 			match self.get_seg_from_uncomp_buf() {
 				Ok(mut segs) => {
 					self.processed = self.processed + segs.len();
-					println!("segment compressed {}", self.processed);
+					println!("segment recoded {}", self.processed);
 					match &self.file_manager {
 						Some(fm) => {
 							for mut seg in segs{
@@ -135,7 +143,42 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 							}
 						}
 						None => {
-							self.compress_method.run_compress(&mut segs);
+							for seg in &mut segs {
+								// println!("segment key: {:?} with comp time:{}",seg.get_key(),seg.get_comp_times());
+								match seg.get_method().as_ref().unwrap() {
+									Methods::Sprintz (scale) => {
+										let pre = SprintzDoubleCompress::new(10, 20,*scale);
+										pre.run_decompress(seg);
+										let cur = PAACompress::new(4,20);
+										cur.run_single_compress(seg);
+									},
+									Methods::Buff(scale)=> {
+										let pre = SplitBDDoubleCompress::new(10,20, *scale);
+										pre.run_decompress(seg);
+										let cur =PAACompress::new(4,20);
+										cur.run_single_compress(seg);
+									},
+									Methods::Snappy=> {
+										let pre = SnappyCompress::new(10,20);
+										pre.run_decompress(seg);
+										let cur = PAACompress::new(4,20);
+										cur.run_single_compress(seg);
+									},
+									Methods::Gzip => {
+										let pre = GZipCompress::new(10,20);
+										pre.run_decompress(seg);
+										let cur =PAACompress::new(4,20);
+										cur.run_single_compress(seg);
+									},
+									Methods::Paa(_wsize) => {
+										let cur = PAACompress::new(2,20);
+										cur.run_single_compress(seg);
+									},
+									_ => todo!()
+								}
+								seg.update_comp_times();
+							}
+
 							match self.put_segs_in_comp_buf(segs) {
 								Ok(()) => continue,
 								Err(_) => continue, /* Silence the failure to put the segment in */
@@ -146,6 +189,10 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 				Err(BufErr::BufEmpty) => {
 					println!("Buffer is empty. Compression process exit.");
 					break
+				},
+				Err(BufErr::UnderThresh) => {
+					thread::sleep(Duration::from_millis(100));
+					continue
 				},
 				Err(e)=>{
 					//println!("No segment is fetched, try again.");

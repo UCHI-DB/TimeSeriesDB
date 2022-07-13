@@ -7,6 +7,7 @@ use std::time::Instant;
 use crate::methods::compress::CompressionMethod;
 use std::slice::Iter;
 use my_bit_vec::BitVec;
+use num::FromPrimitive;
 use crate::methods::Methods;
 
 #[derive(Clone)]
@@ -54,6 +55,37 @@ impl SprintzDoubleCompress {
             pre = cur_int;
         }
         println!("Number of scan items:{}", expected_datapoints.len());
+        expected_datapoints
+    }
+
+    pub(crate) fn decode_general<T>(&self, bytes: &Vec<u8>) -> Vec<T>
+    where T: FromPrimitive{
+        let mut expected_datapoints = Vec::new();
+        let scl = self.scale as f64;
+        let mut bitpack = BitPack::<&[u8]>::new(bytes.as_slice());
+        let ubase_int = bitpack.read(32).unwrap();
+        let base_int = unsafe { mem::transmute::<u32, i32>(ubase_int) };
+        // println!("base int:{}",base_int);
+        let len = bitpack.read(32).unwrap();
+        // println!("total vector size:{}",len);
+        let ilen = bitpack.read(8).unwrap();
+
+        // check integer part and update bitmap;
+        let mut cur;
+        let mut pre = base_int;
+        let mut delta = 0i32;
+        let mut cur_int = 0i32;
+        for i in 0..len {
+            cur = bitpack.read(ilen as usize).unwrap();
+            delta = unzigzag(cur);
+            cur_int = pre+delta;
+            // if i<10{
+            //     println!("{}th value: {}",i,(cur_int as f64)/scl);
+            // }
+            expected_datapoints.push(FromPrimitive::from_f64((cur_int as f64)/scl).unwrap());
+            pre = cur_int;
+        }
+        // println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
     }
 
@@ -331,7 +363,7 @@ impl SprintzDoubleCompress {
 }
 
 impl<'a, T> CompressionMethod<T> for SprintzDoubleCompress
-    where T: Serialize + Clone+ Copy+Into<f64>+ Deserialize<'a>{
+    where T: Serialize + Clone+ Copy+Into<f64>+ Deserialize<'a>+ FromPrimitive{
     fn get_segments(&self) {
         unimplemented!()
     }
@@ -344,7 +376,7 @@ impl<'a, T> CompressionMethod<T> for SprintzDoubleCompress
         let start = Instant::now();
         for seg in segs {
             let binary =  self.encode(seg);
-            seg.set_comp(binary);
+            seg.set_comp(Some(binary));
             seg.set_data(Vec::new());
             seg.set_method(Methods::Sprintz(self.scale));
         }
@@ -353,7 +385,10 @@ impl<'a, T> CompressionMethod<T> for SprintzDoubleCompress
 //        println!("Time elapsed in sprintz function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Vec<Segment<T>>) {
-        unimplemented!()
+    fn run_decompress(&self, seg: &mut Segment<T>) {
+        let vec =  self.decode_general(seg.get_comp());
+        seg.set_comp(None);
+        seg.set_data(vec);
+        seg.set_method(Methods::Sprintz(self.scale));
     }
 }
