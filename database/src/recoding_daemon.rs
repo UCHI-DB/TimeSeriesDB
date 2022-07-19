@@ -170,9 +170,11 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 										let cur =PAACompress::new(4,20);
 										cur.run_single_compress(seg);
 									},
-									Methods::Paa(_wsize) => {
+									Methods::Paa(wsize) => {
+										let ws = wsize * 2;
 										let cur = PAACompress::new(2,20);
 										cur.run_single_compress(seg);
+										seg.set_method(Methods::Paa(ws));
 									},
 									_ => todo!()
 								}

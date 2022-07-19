@@ -5,6 +5,7 @@ pub mod btr_array;
 pub mod buff_simd;
 pub mod buff_slice;
 pub mod scaled_slice;
+pub mod rrd_sample;
 
 use std::{env, fs};
 use crate::client::construct_file_iterator_skip_newline;

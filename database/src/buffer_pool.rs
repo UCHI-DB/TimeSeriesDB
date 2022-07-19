@@ -12,6 +12,7 @@ use num::{FromPrimitive, Num, zero};
 use crate::{CompressionMethod, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
 
 use segment::{Segment,SegmentKey};
+use crate::compress::rrd_sample::RRDsample;
 use crate::compress::split_double::SplitBDDoubleCompress;
 use crate::methods::{IsLossless, Methods};
 
@@ -655,10 +656,14 @@ fn Get_AggStats<T:Num + FromPrimitive+ Copy + Send + Into<f64>+ PartialOrd+ Add<
 			let pre = GZipCompress::new(10,20);
 			vec = pre.decode(seg.get_comp());
 		},
-		Methods::Paa(_wsize) => {
-			let cur = PAACompress::new(2,20);
+		Methods::Paa(wsize) => {
+			let cur = PAACompress::new(*wsize, 20);
 			vec = cur.decodeVec(seg.get_data());
 			vec.truncate(size);
+		},
+		Methods::Rrd_sample => {
+			let cur = RRDsample::new(20);
+			vec = cur.decode(seg);
 		},
 		_ => todo!()
 	}
@@ -815,6 +820,7 @@ impl<T,U> LRUBuffer<T,U>
 		let size = value.get_byte_size().unwrap();
 		// update aggstats for query accuracy profiling
 		if IsLossless(value.get_method().as_ref().unwrap()){
+			println!("buffer size: {}, agg stats size: {}",self.buffer.len(), self.agg_stats.len() );
 			self.agg_stats.insert(key, Get_AggStats(&value));
 		}
 
