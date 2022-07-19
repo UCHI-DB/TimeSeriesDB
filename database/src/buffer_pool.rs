@@ -13,7 +13,7 @@ use crate::{CompressionMethod, GZipCompress, PAACompress, segment, SnappyCompres
 
 use segment::{Segment,SegmentKey};
 use crate::compress::split_double::SplitBDDoubleCompress;
-use crate::methods::Methods;
+use crate::methods::{IsLossless, Methods};
 
 /* 
  * Overview:
@@ -636,6 +636,7 @@ impl<T> AggStats<T> where T: Copy + Send, {
 
 fn Get_AggStats<T:Num + FromPrimitive+ Copy + Send + Into<f64>+ PartialOrd+ Add<T, Output = T>> (seg: &Segment<T>) -> AggStats<T>{
 	let mut vec = Vec::new();
+	let size = seg.get_size();
 	match seg.get_method().as_ref().unwrap() {
 		Methods::Sprintz (scale) => {
 			let pre = SprintzDoubleCompress::new(10, 20,*scale);
@@ -657,6 +658,7 @@ fn Get_AggStats<T:Num + FromPrimitive+ Copy + Send + Into<f64>+ PartialOrd+ Add<
 		Methods::Paa(_wsize) => {
 			let cur = PAACompress::new(2,20);
 			vec = cur.decodeVec(seg.get_data());
+			vec.truncate(size);
 		},
 		_ => todo!()
 	}
@@ -677,7 +679,7 @@ fn Get_AggStats<T:Num + FromPrimitive+ Copy + Send + Into<f64>+ PartialOrd+ Add<
 
 
 impl<T,U> SegmentBuffer<T> for LRUBuffer<T,U>
-	where T: Copy + Send + Serialize + DeserializeOwned + Debug,
+	where T: Copy + Send + Serialize + DeserializeOwned + Debug+Num + FromPrimitive + PartialOrd + Into<f64>,
 		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
 {
 
@@ -790,7 +792,7 @@ impl<T,U> SegmentBuffer<T> for LRUBuffer<T,U>
 
 
 impl<T,U> LRUBuffer<T,U>
-	where T: Copy + Send + Serialize + DeserializeOwned + Debug,
+	where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num + FromPrimitive + PartialOrd + Into<f64>,
 		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
 {
 	pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T,U> {
@@ -811,6 +813,11 @@ impl<T,U> LRUBuffer<T,U>
 
 	fn push_back_node(&mut self, key: SegmentKey, value: Segment<T>) {
 		let size = value.get_byte_size().unwrap();
+		// update aggstats for query accuracy profiling
+		if IsLossless(value.get_method().as_ref().unwrap()){
+			self.agg_stats.insert(key, Get_AggStats(&value));
+		}
+
 		let mut node = Node {
 			next: None,
 			prev: self.tail,

@@ -83,14 +83,16 @@ pub struct Segment<T> {
 	binary: Option<Vec<u8>>,
 	time_lapse: Option<Vec<Duration>>,
 	prev_seg_offset: Option<Duration>,
-	comp_time: usize
+	comp_time: usize,
+	size: usize
 	//next_seg_offset: Option<Duration>,
 }
+
 
 impl<T> Segment<T> {
 	pub fn new(method: Option<Methods>, timestamp: SystemTime, signal: SignalId,
 	    data: Vec<T>, time_lapse: Option<Vec<Duration>>, next_seg_offset: Option<Duration>) -> Segment<T> {
-		
+		let size = data.len();
 		Segment {
 			method: method,
 			timestamp: timestamp,
@@ -99,7 +101,8 @@ impl<T> Segment<T> {
 			binary: None,
 			time_lapse: time_lapse,
 			prev_seg_offset: next_seg_offset,
-			comp_time: 0
+			comp_time: 0,
+			size: size
 		}
 	}
 
@@ -129,6 +132,10 @@ impl<T> Segment<T> {
 	pub fn get_data(&self) ->  &Vec<T>
 	{
 		&self.data
+	}
+
+	pub fn get_size(&self) -> usize {
+		self.size
 	}
 
 	pub fn set_data(&mut self,data: Vec<T>){
@@ -300,7 +307,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 		let mut output: Vec<Complex<T>> = vec![Complex::zero(); size];
 
 		fft.process(&mut input, &mut output);
-
+		let size = output.len();
 		Segment {
 			method: Some(Fourier(1.0)),
 			timestamp: self.timestamp,
@@ -309,7 +316,8 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
-			comp_time: 0
+			comp_time: 0,
+			size: size
 		}
 
 	}
@@ -335,7 +343,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 		}
 
 		// skip normalizing by sqr(size), will handle this in decompression step
-
+		let size = output.len();
 		Segment {
 			method: Some(Fourier (ratio)),
 			timestamp: self.timestamp,
@@ -344,7 +352,8 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
-			comp_time: 0
+			comp_time: 0,
+			size: size
 		}
 
 	}
@@ -369,8 +378,8 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 
 		fft.process(&mut self.data.clone(), &mut output);
 
-		let output = output.iter().map(|c| c.re).collect();
-
+		let output:Vec<T> = output.iter().map(|c| c.re).collect();
+		let size:usize = output.len();
 		Segment {
 			method: None,
 			timestamp: self.timestamp,
@@ -379,7 +388,8 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
-			comp_time: 0
+			comp_time: 0,
+			size: size
 		}
 	}
 
@@ -392,8 +402,8 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 
 		fft.process(&mut self.data.clone(), &mut output);
 
-		let output = output.iter().map(|c| c.re.into()/size as f64).collect();
-
+		let output: Vec<f64> = output.iter().map(|c| c.re.into()/size as f64).collect();
+		let size: usize= output.len();
 		Segment {
 			method: None,
 			timestamp: self.timestamp,
@@ -402,7 +412,8 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			binary: None,
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
-			comp_time: 0
+			comp_time: 0,
+			size: size
 		}
 	}
 }
@@ -487,12 +498,12 @@ pub fn paa_compress_and_retain<T>(seg: &Segment<T>, chunk_size: usize) -> Segmen
 {
 
 	let zero = T::zero();
-	let paa_data = seg.data.chunks(chunk_size)
+	let paa_data:Vec<T> = seg.data.chunks(chunk_size)
 						   .map(|x| {
 						   		x.iter().fold(zero, |sum, &i| sum + i) / FromPrimitive::from_usize(x.len()).unwrap()
 						   })
 						   .collect();
-
+	let size:usize = paa_data.len();
 	Segment {
 		method: None,
 		timestamp: seg.timestamp,
@@ -501,7 +512,8 @@ pub fn paa_compress_and_retain<T>(seg: &Segment<T>, chunk_size: usize) -> Segmen
 		binary: None,
 		time_lapse: seg.time_lapse.clone(),
 		prev_seg_offset: seg.prev_seg_offset,
-		comp_time: 0
+		comp_time: 0,
+		size: size
 	}	
 }
 

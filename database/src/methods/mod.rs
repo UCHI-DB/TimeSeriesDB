@@ -53,10 +53,21 @@ pub enum Methods {
     Kernel (DictionaryId),
     SparseLearning (DictionaryId),
     DeepLearning (String),
+    Rrd_sample
 }
 
-
-
+pub fn IsLossless(m: &Methods) -> bool {
+    match m {
+        Methods::Uncompr => true,
+        Methods::Gorilla => true,
+        Methods::Sprintz(_) => true,
+        Methods::Gzip => true,
+        Methods::Snappy => true,
+        Methods::Buff(scale_) => true,
+        Methods::Paa(scale_) => true,
+        _ => {  false },
+    }
+}
 
 impl fmt::Display for Methods {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
