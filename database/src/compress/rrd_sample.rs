@@ -79,6 +79,11 @@ impl<'a, T> CompressionMethod<T> for RRDsample
 //        println!("Time elapsed in sprintz function() is: {:?}", duration);
     }
 
+    fn run_single_compress(&self, seg: &mut Segment<T>) {
+        self.encodeVec(seg);
+        seg.set_method(Methods::Rrd_sample);
+    }
+
     fn run_decompress(&self, seg: &mut Segment<T>) {
         let vec =  self.decode(seg);
         seg.set_comp(None);

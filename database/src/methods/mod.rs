@@ -64,7 +64,6 @@ pub fn IsLossless(m: &Methods) -> bool {
         Methods::Gzip => true,
         Methods::Snappy => true,
         Methods::Buff(scale_) => true,
-        Methods::Paa(scale_) => true,
         _ => {  false },
     }
 }

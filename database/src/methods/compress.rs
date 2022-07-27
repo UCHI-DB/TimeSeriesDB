@@ -340,7 +340,7 @@ impl GZipCompress {
             },
             _           => panic!("Failed to convert bytes into segment"),
         }
-        println!("Number of scan items:{}", expected_datapoints.len());
+        // println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
     }
 
@@ -359,7 +359,7 @@ impl GZipCompress {
             },
             _           => panic!("Failed to convert bytes into segment"),
         }
-        println!("Number of scan items:{}", expected_datapoints.len());
+        // println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
     }
 

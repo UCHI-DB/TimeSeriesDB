@@ -7,7 +7,7 @@ use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 use smartcore::cluster::kmeans::{KMeans, KMeansParameters};
 // Performance metrics
 use smartcore::metrics::{homogeneity_score, completeness_score, v_measure_score, roc_auc_score, accuracy};
-use std::env;
+use std::{env, fs};
 use crate::file_io::{read_csvfile, read_paafile, read_fftfile, read_grailfile, build_iforest, predict_iforest, compare2lables, compare2lablesDirect, compareGroundTruthUCI, compareGroundTruthUCR, read_plafile};
 use std::path::Path;
 use std::collections::HashSet;
@@ -21,6 +21,7 @@ use smartcore::neighbors::knn_classifier::KNNClassifier;
 use smartcore::svm::svc::{SVC, SVCParameters};
 use smartcore::tree::decision_tree_classifier::DecisionTreeClassifier;
 use time_series_start::knn::get_gamma;
+use serde_json::{Result, Value};
 
 fn main() {
 
@@ -29,13 +30,24 @@ fn main() {
     let train_set = &args[2];
     let lossy = &args[3];
     let precision = args[4].parse::<f64>().unwrap();
+    let mut save = false;
+    if args.len()>5{
+        save = args[5].parse::<bool>().unwrap();
+    }
+
     // let window = 1;
     println!("{}, {}, {}, {},",precision, train_set, method, lossy);
 
 
     let mut need_test_file = false;
     let mut test_file =  train_set.clone().replace("_TRAIN", "_TEST");
-    // println!("{}, ",test_file);
+
+    let vec_file: Vec<&str> = train_set.split('/').collect();
+    let temp_name = vec_file[vec_file.len()-1];
+    let name_vec: Vec<&str> = temp_name.split('_').collect();
+    let name = name_vec[0];
+    println!("extracteddd name: {}, ",name);
+
     if method.as_str()=="dtree" || method.as_str()=="iforest" || method.as_str()=="knn" || method.as_str()=="rforest"{
         need_test_file = true;
     }
@@ -170,45 +182,63 @@ fn main() {
     let mut true_labels = &digits_data.target;
     let k = HashSet::<isize>::from_iter(true_labels.iter().map(|&x|x as isize).collect::<Vec<isize>>()).len();
     println!("K: {}", k);
+    println!("#sample: {}, #features: {}", origin_data.num_samples, origin_data.num_features);
     let mut labels= Vec::new();
     let mut origin_labels = Vec::new();
+    let model_file = format!("./model/{}_{}.model",&name, &method);
+    println!("model directory: {}",model_file);
 
     match method.as_str() {
         "dbscan" => {
             // Fit & predict with dbscan
-            let model = DBSCAN::fit(&x, DBSCANParameters::default().with_eps(0.2).with_min_samples(k*10)).unwrap();
+            let model = DBSCAN::fit(&origin_x, DBSCANParameters::default().with_eps(0.2).with_min_samples(k*10)).unwrap();
+            if save{
+                fs::write(model_file,&serde_json::to_string(&model).unwrap());
+            }
             labels = model.predict(&x).unwrap();
             origin_labels = model.predict(&origin_x).unwrap();
         }
         "kmeans" => {
             // Fit & predict with kmeans
-            let model = KMeans::fit(&x, KMeansParameters::default().with_k(k)).unwrap();
+            let model = KMeans::fit(&origin_x, KMeansParameters::default().with_k(k)).unwrap();
+            if save{
+                fs::write(model_file,&serde_json::to_string(&model).unwrap());
+            }
             labels = model.predict(&x).unwrap();
             origin_labels =  model.predict(&origin_x).unwrap();
         }
         "iforest" => {
             // Fit & predict with isolated forest
-            let train_min = digits_data.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-            let test_min = test_data.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let train_min = origin_data.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let test_min = origin_test_data.data.iter().fold(f64::INFINITY, |a, &b| a.min(b));
             let mut min = train_min;
             if train_min>test_min{
                 min = test_min
             }
             println!("min value: {},{}", train_min,test_min);
-            let iforest = build_iforest(&digits_data.data, &digits_data.target,digits_data.num_features,min);
+            let iforest = build_iforest(&origin_data.data, &origin_data.target,origin_data.num_features,min);
+            if save{
+                fs::write(model_file,&serde_json::to_string(&iforest).unwrap());
+            }
             predict_iforest(iforest, &test_data.data, &test_data.target, test_data.num_features, min);
             // todo: need to implemente for match labels
         }
         "dtree" => {
             // Fit & predict with decision tree
-            let model = DecisionTreeClassifier::fit(&x, &true_labels, Default::default()).unwrap();
+            let model = DecisionTreeClassifier::fit(&origin_x, &true_labels, Default::default()).unwrap();
+            if save{
+                fs::write(model_file,&serde_json::to_string(&model).unwrap());
+            }
             labels = model.predict(&totest).unwrap();
             origin_labels = model.predict(&origin_totest).unwrap();
             true_labels = &test_data.target;
         }
         "knn" => {
             // Fit & predict with knn
-            let model =  KNNClassifier::fit(&x, &true_labels, Default::default()).unwrap();
+            let model =  KNNClassifier::fit(&origin_x, &true_labels, Default::default()).unwrap();
+            if save{
+                fs::write(model_file,&serde_json::to_string(&model).unwrap());
+            }
             labels = model.predict(&totest).unwrap();
             origin_labels =  model.predict(&origin_totest).unwrap();
             true_labels = &test_data.target;
@@ -217,7 +247,10 @@ fn main() {
         }
         "rforest" => {
             // Fit & predict with decision tree
-            let model =  RandomForestClassifier::fit(&x, &true_labels, Default::default()).unwrap();
+            let model =  RandomForestClassifier::fit(&origin_x, &true_labels, Default::default()).unwrap();
+            if save{
+                fs::write(model_file,&serde_json::to_string(&model).unwrap());
+            }
             labels = model.predict(&totest).unwrap();
             origin_labels = model.predict(&origin_totest).unwrap();
             true_labels = &test_data.target;
@@ -226,7 +259,10 @@ fn main() {
         }
         "nb" => {
             // Fit & predict with decision tree
-            let gnb = GaussianNB::fit(&x, &true_labels, Default::default()).unwrap();
+            let gnb = GaussianNB::fit(&origin_x, &true_labels, Default::default()).unwrap();
+            if save{
+                fs::write(model_file,&serde_json::to_string(&gnb).unwrap());
+            }
             labels = gnb.predict(&x).unwrap(); // Predict class labels
             origin_labels = gnb.predict(&origin_x).unwrap();
             // println!("accuracy: {}", accuracy(true_labels, &labels)); // Prints 0.96

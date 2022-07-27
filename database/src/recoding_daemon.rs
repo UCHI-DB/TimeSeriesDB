@@ -12,11 +12,13 @@ use std::any::Any;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use num::{FromPrimitive, Num};
+use rand::Rng;
 use crate::buffer_pool::BufErr::BufEmpty;
 use crate::methods::Methods;
 use crate::compress::split_double::SplitBDDoubleCompress;
 use crate::compress::sprintz::SprintzDoubleCompress;
 use crate::compress::gorilla::{GorillaBDCompress, GorillaCompress};
+use crate::compress::rrd_sample::RRDsample;
 
 pub struct RecodingDaemon<T,U,F>
 	where T: Copy + Send + Serialize + DeserializeOwned,
@@ -67,15 +69,22 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 						match buf.remove_segment(){
 							Ok(seg) => {
 								segs.push(seg);
-								if segs.len() == batch_size{
+								if segs.len() == batch_size {
 									break;
 								}
 							},
 							Err(_) => continue,
 						}
 					}
+
 					Ok(segs)
 				} else {
+					// add random number check to avoid frequent query check
+					let mut rng = rand::thread_rng();
+					let n = rng.gen_range(0, 5);
+					if (n==1){
+						buf.run_query();
+					}
 					Err(BufErr::UnderThresh)
 				}
 			}
@@ -144,31 +153,57 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 						}
 						None => {
 							for seg in &mut segs {
+								let lossy = "rrd";
 								// println!("segment key: {:?} with comp time:{}",seg.get_key(),seg.get_comp_times());
 								match seg.get_method().as_ref().unwrap() {
 									Methods::Sprintz (scale) => {
 										let pre = SprintzDoubleCompress::new(10, 20,*scale);
 										pre.run_decompress(seg);
-										let cur = PAACompress::new(4,20);
-										cur.run_single_compress(seg);
+										if lossy=="paa"{
+											let cur = PAACompress::new(4,20);
+											cur.run_single_compress(seg);
+										}
+										else {
+											let cur = RRDsample::new(20);
+											cur.run_single_compress(seg);
+										}
+
 									},
 									Methods::Buff(scale)=> {
 										let pre = SplitBDDoubleCompress::new(10,20, *scale);
 										pre.run_decompress(seg);
-										let cur =PAACompress::new(4,20);
-										cur.run_single_compress(seg);
+										if lossy=="paa"{
+											let cur = PAACompress::new(4,20);
+											cur.run_single_compress(seg);
+										}
+										else {
+											let cur = RRDsample::new(20);
+											cur.run_single_compress(seg);
+										}
 									},
 									Methods::Snappy=> {
 										let pre = SnappyCompress::new(10,20);
 										pre.run_decompress(seg);
-										let cur = PAACompress::new(4,20);
-										cur.run_single_compress(seg);
+										if lossy=="paa"{
+											let cur = PAACompress::new(4,20);
+											cur.run_single_compress(seg);
+										}
+										else {
+											let cur = RRDsample::new(20);
+											cur.run_single_compress(seg);
+										}
 									},
 									Methods::Gzip => {
 										let pre = GZipCompress::new(10,20);
 										pre.run_decompress(seg);
-										let cur =PAACompress::new(4,20);
-										cur.run_single_compress(seg);
+										if lossy=="paa"{
+											let cur = PAACompress::new(4,20);
+											cur.run_single_compress(seg);
+										}
+										else {
+											let cur = RRDsample::new(20);
+											cur.run_single_compress(seg);
+										}
 									},
 									Methods::Paa(wsize) => {
 										let ws = wsize * 2;
@@ -176,6 +211,10 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 										cur.run_single_compress(seg);
 										seg.set_method(Methods::Paa(ws));
 									},
+									Methods::Rrd_sample => {
+										// do nothing
+									}
+
 									_ => todo!()
 								}
 								seg.update_comp_times();
