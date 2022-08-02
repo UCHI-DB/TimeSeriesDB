@@ -357,6 +357,7 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 		}
 
 	}
+
 }
 
 
@@ -379,7 +380,7 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 		fft.process(&mut self.data.clone(), &mut output);
 
 		let output:Vec<T> = output.iter().map(|c| c.re).collect();
-		let size:usize = output.len();
+
 		Segment {
 			method: None,
 			timestamp: self.timestamp,
@@ -451,6 +452,11 @@ impl<'a,T> ComplexDef<T>
 	#[inline]
 	fn to_complex(&self) -> Complex<T> {
 		Complex::new(self.re,self.im)
+	}
+
+	#[inline]
+	fn to_imag(&self) -> Complex<T> {
+		Complex::new(self.re,T::zero() - self.im)
 	}
 
 	#[inline]
@@ -698,6 +704,33 @@ impl FourierCompress {
 		return seg.fourier_decompress_f64().get_data().to_vec();
 	}
 
+	pub fn fourier_compress_budget_mut<T:Num+FFTnum+ Clone>(&self, seg:&mut Segment<T>, ratio : f64) {
+		let size = seg.get_data().len();
+		let k = (size as f64 * ratio/2.0) as usize;
+		let mut planner = FFTplanner::new(false);
+		let fft = planner.plan_fft(size);
+
+		let mut input: Vec<Complex<T>> = seg.get_data().iter()
+			.map(|&x| Complex::new(x,T::zero()))
+			.collect();
+
+		let mut output: Vec<Complex<T>> = vec![Complex::zero(); size];
+		fft.process(&mut input, &mut output);
+
+		output.truncate(k);
+		let mut vec = Vec::new();
+		for val in output{
+			vec.push(val.re);
+			vec.push(val.im);
+		}
+		seg.set_data(vec);
+		seg.set_comp(None);
+		seg.set_method(Methods::Fourier(ratio));
+
+		// skip normalizing by sqr(size), will handle this in decompression step
+
+	}
+
 	pub(crate) fn max(&self, bytes: Vec<u8>) -> f64 {
 		let vec = self.decode(bytes);
 		let mut res = Bitmap::create();
@@ -742,7 +775,7 @@ impl<'a,T> CompressionMethod<T> for FourierCompress
 
 	fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
 		for seg in segs {
-			fourier_compress(seg);
+			self.fourier_compress_budget_mut(seg,0.5);
 		}
 	}
 

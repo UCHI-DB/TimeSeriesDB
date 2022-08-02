@@ -90,3 +90,5 @@ quickcheck = "0.9.2"
 quickcheck_macros = "0.9"
 myroaring = { version = "0.6.5", path = "../../roaring-rs" }
 my-bit-vec = { version = "0.6", path = "../../bit-vec"  }
+smartcore = { path = "../smartcore" }
+serde_json = "1.0"

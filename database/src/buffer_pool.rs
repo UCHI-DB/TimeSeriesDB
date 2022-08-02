@@ -6,9 +6,16 @@ use rocksdb::DBVector;
 use crate::file_handler::{FileManager};
 use std::collections::vec_deque::Drain;
 use std::collections::hash_map::{HashMap, Entry};
+use std::fs;
 use std::ops::Add;
 use std::time::{SystemTime, UNIX_EPOCH};
+use libc::time;
 use num::{FromPrimitive, Num, Signed, zero};
+use smartcore::api::{Predictor, PredictorVec};
+use smartcore::cluster::kmeans::KMeans;
+use smartcore::linalg::{BaseVector, Matrix};
+use smartcore::linalg::naive::dense_matrix::DenseMatrix;
+use smartcore::math::num::RealNumber;
 
 use crate::{CompressionMethod, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
 
@@ -68,7 +75,9 @@ pub trait SegmentBuffer<T: Copy + Send> {
      * the items in the buffer, but will leave the allocation
      * of the buffer untouched
      */
-    fn drain(&mut self) -> Drain<Segment<T>>;
+    fn drain(&mut self) -> Drain<Segment<T>> {
+        unimplemented!()
+    }
 
     /* Will copy the buffer and collect it into a vector */
     fn copy(&self) -> Vec<Segment<T>>;
@@ -99,8 +108,10 @@ pub trait SegmentBuffer<T: Copy + Send> {
      */
     fn idle_threshold(&self, threshold: f32) -> bool;
 
-    fn get_buffer_size(&self) -> usize;
 
+    fn get_buffer_size(&self) -> usize {
+        unimplemented!()
+    }
     /* Signal done*/
     fn is_done(&self) -> bool;
 
@@ -190,9 +201,7 @@ impl<T, U> SegmentBuffer<T> for ClockBuffer<T, U>
     }
 
 
-    fn drain(&mut self) -> Drain<Segment<T>> {
-        unimplemented!()
-    }
+
 
     fn copy(&self) -> Vec<Segment<T>> {
         self.buffer.values().map(|x| x.clone()).collect()
@@ -235,9 +244,7 @@ impl<T, U> SegmentBuffer<T> for ClockBuffer<T, U>
         unimplemented!()
     }
 
-    fn get_buffer_size(&self) -> usize {
-        unimplemented!()
-    }
+
 
     fn remove_segment(&mut self) -> Result<Segment<T>, BufErr> {
         let mut counter = 0;
@@ -589,6 +596,72 @@ impl<T> NoFmClockBuffer<T>
     }
 }
 
+
+pub fn Get_AggStats<T: Num + FromPrimitive + Copy + Send + Into<f64> + PartialOrd + Add<T, Output=T>>(seg: &Segment<T>) -> AggStats<T> {
+    let vec = Get_Decomp(seg);
+    return Get_AggStatsFromVec(&vec);
+}
+
+pub fn Get_AggStatsFromVec<T: Num + FromPrimitive + Copy + Send + Into<f64> + PartialOrd + Add<T, Output=T>>(vec: &Vec<T>) -> AggStats<T> {
+
+
+    let &min = vec.iter().fold(None, |min, x| match min {
+        None => Some(x),
+        Some(y) => Some(if x > y { y } else { x }),
+    }).unwrap();
+    let &max = vec.iter().fold(None, |max, x| match max {
+        None => Some(x),
+        Some(y) => Some(if x > y { x } else { y }),
+    }).unwrap();
+
+    let sum = vec.iter().fold(T::zero(), |sum, &i| sum + i);
+    let count = vec.len();
+    return AggStats::new(max, min, sum, count);
+}
+
+
+pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + Into<f64> >(seg: &Segment<T>) -> Vec<T> {
+    let mut vec = Vec::new();
+    let size = seg.get_size();
+    match seg.get_method().as_ref().unwrap() {
+        Methods::Sprintz(scale) => {
+            let pre = SprintzDoubleCompress::new(10, 20, *scale);
+            vec = pre.decode_general(seg.get_comp());
+        }
+        Methods::Buff(scale) => {
+            let pre = SplitBDDoubleCompress::new(10, 20, *scale);
+            vec = pre.decode_general(seg.get_comp());
+        }
+        Methods::Snappy => {
+            let pre = SnappyCompress::new(10, 20);
+            vec = pre.decode(seg.get_comp());
+        }
+        Methods::Gzip => {
+            let pre = GZipCompress::new(10, 20);
+            vec = pre.decode(seg.get_comp());
+        }
+        Methods::Paa(wsize) => {
+            // println!("compress time: {}, wsize:{}, segment size: {}", seg.get_comp_times(), wsize, size);
+            let cur = PAACompress::new(*wsize, 20);
+            vec = cur.decodeVec(seg.get_data());
+            vec.truncate(size);
+        }
+        Methods::Rrd_sample => {
+            let cur = RRDsample::new(20);
+            vec = cur.decode(seg);
+        }
+        _ => todo!()
+    }
+    return vec;
+}
+
+
+
+pub fn Err_Eval<T:PartialEq>(va: &Vec<T>,vb: &Vec<T>)-> usize{
+    let err = va.iter().zip(vb).filter(|&(a, b)| a != b).count();
+    return err;
+}
+
 /***************************************************************
  ************************LRUcomp_Buffer************************
  ***************************************************************/
@@ -597,8 +670,9 @@ Use double linked list to achieve O(1) get and put time complexity*/
 
 #[derive(Debug)]
 pub struct LRUBuffer<T, U>
-    where T: Copy + Send,
-          U: FileManager<Vec<u8>, DBVector> + Sync + Send,
+    where T: Copy + Send + RealNumber,
+          U: FileManager<Vec<u8>, DBVector> + Sync + Send
+
 {
     budget: usize,
     cur_size: usize,
@@ -609,6 +683,8 @@ pub struct LRUBuffer<T, U>
     file_manager: U,
     buf_size: usize,
     done: bool,
+    rlabel: BTreeMap<SegmentKey, Vec<T>>,
+    predictor: Option<KMeans<T>>
 }
 
 #[derive(Clone, Debug)]
@@ -622,7 +698,7 @@ struct Node<T>
 
 
 #[derive(Debug)]
-struct AggStats<T>
+pub struct AggStats<T>
     where T: Copy + Send, {
     max: T,
     min: T,
@@ -657,57 +733,11 @@ impl<T> AggStats<T> where T: Copy + Send + Add<Output=T> + PartialOrd, {
     }
 }
 
-fn Get_AggStats<T: Num + FromPrimitive + Copy + Send + Into<f64> + PartialOrd + Add<T, Output=T>>(seg: &Segment<T>) -> AggStats<T> {
-    let mut vec = Vec::new();
-    let size = seg.get_size();
-    match seg.get_method().as_ref().unwrap() {
-        Methods::Sprintz(scale) => {
-            let pre = SprintzDoubleCompress::new(10, 20, *scale);
-            vec = pre.decode_general(seg.get_comp());
-        }
-        Methods::Buff(scale) => {
-            let pre = SplitBDDoubleCompress::new(10, 20, *scale);
-            vec = pre.decode_general(seg.get_comp());
-        }
-        Methods::Snappy => {
-            let pre = SnappyCompress::new(10, 20);
-            vec = pre.decode(seg.get_comp());
-        }
-        Methods::Gzip => {
-            let pre = GZipCompress::new(10, 20);
-            vec = pre.decode(seg.get_comp());
-        }
-        Methods::Paa(wsize) => {
-            // println!("compress time: {}, wsize:{}, segment size: {}", seg.get_comp_times(), wsize, size);
-            let cur = PAACompress::new(*wsize, 20);
-            vec = cur.decodeVec(seg.get_data());
-            vec.truncate(size);
-        }
-        Methods::Rrd_sample => {
-            let cur = RRDsample::new(20);
-            vec = cur.decode(seg);
-        }
-        _ => todo!()
-    }
-
-    let &min = vec.iter().fold(None, |min, x| match min {
-        None => Some(x),
-        Some(y) => Some(if x > y { y } else { x }),
-    }).unwrap();
-    let &max = vec.iter().fold(None, |max, x| match max {
-        None => Some(x),
-        Some(y) => Some(if x > y { x } else { y }),
-    }).unwrap();
-
-    let sum = vec.iter().fold(T::zero(), |sum, &i| sum + i);
-    let count = seg.get_size();
-    return AggStats::new(max, min, sum, count);
-}
 
 
 impl<T, U> SegmentBuffer<T> for LRUBuffer<T, U>
-    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num + FromPrimitive + PartialOrd + Into<f64> + Signed + Display,
-          U: FileManager<Vec<u8>, DBVector> + Sync + Send,
+    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num + FromPrimitive + PartialOrd + Into<f64> + Signed + Display+ RealNumber,
+          U: FileManager<Vec<u8>, DBVector> + Sync + Send
 {
     fn get(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>, BufErr> {
         if self.retrieve(key)? {
@@ -822,11 +852,15 @@ impl<T, U> SegmentBuffer<T> for LRUBuffer<T, U>
 
 
 impl<T, U> LRUBuffer<T, U>
-    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num + FromPrimitive + PartialOrd + Into<f64> + num::Signed + Display,
+    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num + FromPrimitive + PartialOrd + Into<f64> + num::Signed + Display+ RealNumber,
           U: FileManager<Vec<u8>, DBVector> + Sync + Send,
 {
     pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T, U> {
         println!("created LRU comp buffer with budget {} bytes", budget);
+        /* Construct the ML model	 */
+        let ml_content = fs::read_to_string("../lossyML/model/cbf_kmeans.model").expect("Unable to read ML file");
+        let deserialized_kmeans: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+
         LRUBuffer {
             budget: budget,
             cur_size: 0,
@@ -837,11 +871,18 @@ impl<T, U> LRUBuffer<T, U>
             file_manager: file_manager,
             buf_size: 0,
             done: false,
+            rlabel: BTreeMap::new(),
+            predictor: Some(deserialized_kmeans)
         }
     }
 
     fn evaluate_query(&self) {
         let n =10;
+        let vector_per_seg = 10;
+        let labels_of_N = vector_per_seg *n;
+        let mut firstNerr = 0;
+        let mut lastNerr = 0;
+        let mut totalErr = 0;
         let mut estlatestn: AggStats<T> = AggStats {
             max: (T::one()),
             min: (T::one()),
@@ -897,7 +938,20 @@ impl<T, U> LRUBuffer<T, U>
         cnt = 0;
         let mut agg;
         for (k, v) in self.buffer.iter().rev() {
-            agg = Get_AggStats(&v.value);
+            let vec = Get_Decomp(&v.value);
+            let size = &v.value.get_size();
+            agg = Get_AggStatsFromVec(&vec);
+            // println!("reverse lossless {}", IsLossless(&v.value.get_method().as_ref().unwrap()));
+            if !IsLossless(&v.value.get_method().as_ref().unwrap()) {
+                // println!("vec size {}", size);
+                let label = self.predictor.as_ref().unwrap().predictVec(&vec, size/1000);
+                let cur_err = Err_Eval(&label, self.rlabel.get(k).unwrap());
+                if (cnt<n){
+                    lastNerr += cur_err;
+                }
+                totalErr += cur_err;
+            }
+
             if cnt == 0 {
                 // println!("{:?}",k);
                 estlatestn = AggStats::new(agg.max, agg.min, agg.sum, agg.count);
@@ -917,45 +971,69 @@ impl<T, U> LRUBuffer<T, U>
         cnt = 0;
         for (k, v) in self.agg_stats.iter() {
             if cnt == 0 {
-                println!("{:?}",k);
+                // println!("{:?}",k);
                 earliestn = AggStats::new(v.max, v.min, v.sum, v.count);
 
             } else if cnt < n {
                 earliestn = earliestn.merge(v);
+            }else {
+                break;
             }
             cnt += 1;
         }
 
         cnt = 0;
         for (k, v) in self.buffer.iter() {
-            agg = Get_AggStats(&v.value);
+            let vec = Get_Decomp(&v.value);
+            let size = v.value.get_size();
+            agg = Get_AggStatsFromVec(&vec);
+            if !IsLossless(&v.value.get_method().as_ref().unwrap()) {
+                let label = self.predictor.as_ref().unwrap().predictVec(&vec,size/1000);
+                let cur_err = Err_Eval(&label, self.rlabel.get(k).unwrap());
+                if (cnt<n){
+                    firstNerr += cur_err;
+                }
+            }
+
             if cnt == 0 {
-                println!("{:?}",k);
+                // println!("{:?}",k);
                 estearliestn = AggStats::new(agg.max, agg.min, agg.sum, agg.count);
             } else if cnt < n {
                 estearliestn = estearliestn.merge(&agg);
             }
+            else {
+                break;
+            }
             cnt += 1;
         }
+        let total_label = vector_per_seg*self.buffer.len();
 
         println!("true earliest max: {}, est max: {}",earliestn.max , estearliestn.max);
         println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
         println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
-        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros(),
+        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros(),
                  num::abs((earliestn.max - estearliestn.max) / earliestn.max), num::abs((earliestn.min - estearliestn.min) / earliestn.min),
                  num::abs((earliestn.sum - estearliestn.sum) / earliestn.sum),
                  num::abs((latestn.max - estlatestn.max) / latestn.max), num::abs((latestn.min - estlatestn.min) / latestn.min),
                  num::abs((latestn.sum - estlatestn.sum) / latestn.sum), num::abs((untilnow.max - estuntilnow.max) / untilnow.max),
-                 num::abs((untilnow.min - estuntilnow.min) / untilnow.min), num::abs((untilnow.sum - estuntilnow.sum) / untilnow.sum)
+                 num::abs((untilnow.min - estuntilnow.min) / untilnow.min), num::abs((untilnow.sum - estuntilnow.sum) / untilnow.sum),
+                 firstNerr as f64 /labels_of_N as f64, lastNerr as f64 /labels_of_N as f64, totalErr as f64 / total_label as f64
         )
     }
 
     fn push_back_node(&mut self, key: SegmentKey, value: Segment<T>) {
         let size = value.get_byte_size().unwrap();
+        let entry_size = value.get_size();
         // update aggstats for query accuracy profiling
         if IsLossless(value.get_method().as_ref().unwrap()) {
             // println!("buffer size: {}, agg stats size: {}",self.buffer.len(), self.agg_stats.len() );
-            self.agg_stats.insert(key, Get_AggStats(&value));
+            let vec = Get_Decomp(&value);
+            if !self.rlabel.contains_key(&key){
+                // println!("vec size {}", size);
+                let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+                self.rlabel.insert(key, label);
+            }
+            self.agg_stats.insert(key, Get_AggStatsFromVec(&vec));
         }
 
         let mut node = Node {

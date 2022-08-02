@@ -12,6 +12,8 @@ use crate::methods::compress::CompressionMethod;
 use crate::methods::prec_double::{get_precision_bound, PrecisionBound};
 use std::slice::Iter;
 use my_bit_vec::BitVec;
+use num::FromPrimitive;
+use crate::methods::Methods;
 
 #[derive(Clone)]
 pub struct GorillaCompress {
@@ -76,6 +78,40 @@ impl GorillaCompress {
                     // }
                     // i += 1;
                     expected_datapoints.push(dp);
+                },
+                Err(err) => {
+                    if err == Error::EndOfStream {
+                        done = true;
+                    } else {
+                        panic!("Received an error from decoder: {:?}", err);
+                    }
+                }
+            };
+        }
+        println!("Number of scan items:{}", expected_datapoints.len());
+        expected_datapoints
+    }
+
+    pub(crate) fn decode_general<T>(&self, bytes: &Vec<u8>) -> Vec<T>
+        where T: FromPrimitive{
+        let r = BufferedReader::new(bytes.clone().into_boxed_slice());
+        let mut decoder = GorillaDecoder::new(r);
+
+        let mut expected_datapoints = Vec::new();
+        let mut i = 0;
+        let mut done = false;
+        loop {
+            if done {
+                break;
+            }
+
+            match decoder.next_val() {
+                Ok(dp) => {
+                    // if i<10 {
+                    //     println!("{}",dp);
+                    // }
+                    // i += 1;
+                    expected_datapoints.push(FromPrimitive::from_f64(dp).unwrap());
                 },
                 Err(err) => {
                     if err == Error::EndOfStream {
@@ -381,7 +417,7 @@ impl GorillaCompress {
 }
 
 impl<'a, T> CompressionMethod<T> for GorillaCompress
-    where T: Serialize + Clone+ Copy+Into<f64>+ Deserialize<'a>{
+    where T: Serialize + Clone+ Copy+ FromPrimitive+ Into<f64>+ Deserialize<'a>{
     fn get_segments(&self) {
         unimplemented!()
     }
@@ -393,14 +429,20 @@ impl<'a, T> CompressionMethod<T> for GorillaCompress
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
         let start = Instant::now();
         for seg in segs {
-            self.encode(seg);
+            let binary =  self.encode(seg);
+            seg.set_comp(Some(binary));
+            seg.set_data(Vec::new());
+            seg.set_method(Methods::Gorilla);
         }
         let duration = start.elapsed();
-        info!("Time elapsed in Gorilla function() is: {:?}", duration);
+        // info!("Time elapsed in Gorilla function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Segment<T>) {
-        unimplemented!()
+    fn run_decompress(&self, seg: &mut Segment<T>) {
+        let vec =  self.decode_general(seg.get_comp());
+        seg.set_comp(None);
+        seg.set_data(vec);
+        seg.set_method(Methods::Gorilla);
     }
 }
 

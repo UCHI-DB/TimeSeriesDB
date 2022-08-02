@@ -1,4 +1,4 @@
-use time_series_start::{run_test, run_single_test};
+use time_series_start::{run_single_test};
 use std::env;
 
 fn main() {

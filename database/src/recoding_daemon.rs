@@ -1,18 +1,24 @@
 use rocksdb::DBVector;
-use crate::buffer_pool::BufErr;
+use crate::buffer_pool::{BufErr};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use crate::segment::Segment;
+use crate::segment::{Segment, SegmentKey};
 use std::sync::{Arc,Mutex};
 use crate::buffer_pool::{SegmentBuffer,ClockBuffer};
 use crate::file_handler::{FileManager};
 use crate::{file_handler, GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, PAACompress};
 use crate::methods::compress::CompressionMethod;
 use std::any::Any;
-use std::thread;
+use std::{fs, thread};
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use num::{FromPrimitive, Num};
 use rand::Rng;
+use smartcore::api::Predictor;
+use smartcore::cluster::kmeans::KMeans;
+use smartcore::linalg::Matrix;
+use smartcore::linalg::naive::dense_matrix::DenseMatrix;
+use smartcore::math::num::RealNumber;
 use crate::buffer_pool::BufErr::BufEmpty;
 use crate::methods::Methods;
 use crate::compress::split_double::SplitBDDoubleCompress;
@@ -20,10 +26,21 @@ use crate::compress::sprintz::SprintzDoubleCompress;
 use crate::compress::gorilla::{GorillaBDCompress, GorillaCompress};
 use crate::compress::rrd_sample::RRDsample;
 
-pub struct RecodingDaemon<T,U,F>
-	where T: Copy + Send + Serialize + DeserializeOwned,
+pub fn GetMatrix<T:RealNumber> (seg: &Segment<T>) -> DenseMatrix<T>{
+	let x = DenseMatrix::from_array(
+		seg.get_size()/1000,
+		1000,
+		seg.get_data(),
+	);
+	x
+}
+
+
+
+
+pub struct RecodingDaemon<T,U>
+	where T: Copy + Send + Serialize + DeserializeOwned + RealNumber,
 	      U: FileManager<Vec<u8>,DBVector> + Sync + Send,
-		  F: CompressionMethod<T>
 {
 	seg_buf: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
 	comp_seg_buf: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
@@ -31,20 +48,24 @@ pub struct RecodingDaemon<T,U,F>
 	comp_threshold: f32,
 	uncomp_threshold: f32,
 	processed: usize,
-	compress_method: F,
+	batch: usize,
+	lossy: Methods
 }
 
-impl<T,U,F> RecodingDaemon<T,U,F>
-	where T: Copy + Send + Serialize + DeserializeOwned + FromPrimitive + Num+ Into<f64>,
+impl<T,U> RecodingDaemon<T,U>
+	where T: 'static + Copy + Send + Serialize + DeserializeOwned + FromPrimitive + Num+ Into<f64> + RealNumber,
 		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
-		  F: CompressionMethod<T>
 {
 	pub fn new(seg_buf: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
 			   comp_seg_buf: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
 			   file_manager: Option<U>,
-			   comp_threshold: f32, uncomp_threshold: f32, compress_method: F)
-			   -> RecodingDaemon<T,U,F>
+			   comp_threshold: f32,
+			   uncomp_threshold: f32,
+			   batch: usize,
+			   lossy: Methods)
+			   -> RecodingDaemon<T,U>
 	{
+
 		RecodingDaemon {
 			seg_buf: seg_buf,
 			comp_seg_buf: comp_seg_buf,
@@ -52,7 +73,8 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 			comp_threshold: comp_threshold,
 			uncomp_threshold: uncomp_threshold,
 			processed: 0,
-			compress_method: compress_method,
+			batch: batch,
+			lossy: lossy
 		}
 	}
 
@@ -62,14 +84,13 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 			Ok(mut buf) => {
 				//println!("Lock aquired");
 				if buf.exceed_threshold(self.uncomp_threshold) {
-					let batch_size = self.compress_method.get_batch();
-					println!("Get segment for compression batch size:{}",batch_size);
-					let mut segs = Vec::with_capacity(batch_size);
+					println!("Get segment for compression batch size:{}",self.batch);
+					let mut segs = Vec::with_capacity(self.batch);
 					loop {
 						match buf.remove_segment(){
 							Ok(seg) => {
 								segs.push(seg);
-								if segs.len() == batch_size {
+								if segs.len() == self.batch {
 									break;
 								}
 							},
@@ -97,6 +118,19 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 		self.seg_buf.lock().unwrap().is_done()
 	}
 
+	fn lossy_comp (&self, uncomp_seg: &mut Segment<T>) {
+		match self.lossy {
+			Methods::Paa(scale) => {
+				let cur = PAACompress::new(4, self.batch);
+				cur.run_single_compress(uncomp_seg);
+			}
+			Methods::Rrd_sample => {
+				let cur = RRDsample::new(self.batch);
+				cur.run_single_compress(uncomp_seg);
+			}
+			_ => {}
+		}
+	}
 	fn put_seg_in_comp_buf(&self, seg: Segment<T>) -> Result<(),BufErr>
 	{
 		match self.comp_seg_buf.lock() {
@@ -153,57 +187,32 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 						}
 						None => {
 							for seg in &mut segs {
-								let lossy = "rrd";
 								// println!("segment key: {:?} with comp time:{}",seg.get_key(),seg.get_comp_times());
 								match seg.get_method().as_ref().unwrap() {
 									Methods::Sprintz (scale) => {
 										let pre = SprintzDoubleCompress::new(10, 20,*scale);
 										pre.run_decompress(seg);
-										if lossy=="paa"{
-											let cur = PAACompress::new(4,20);
-											cur.run_single_compress(seg);
-										}
-										else {
-											let cur = RRDsample::new(20);
-											cur.run_single_compress(seg);
-										}
+
+										self.lossy_comp(seg);
 
 									},
 									Methods::Buff(scale)=> {
 										let pre = SplitBDDoubleCompress::new(10,20, *scale);
 										pre.run_decompress(seg);
-										if lossy=="paa"{
-											let cur = PAACompress::new(4,20);
-											cur.run_single_compress(seg);
-										}
-										else {
-											let cur = RRDsample::new(20);
-											cur.run_single_compress(seg);
-										}
+
+										self.lossy_comp(seg);
 									},
 									Methods::Snappy=> {
 										let pre = SnappyCompress::new(10,20);
 										pre.run_decompress(seg);
-										if lossy=="paa"{
-											let cur = PAACompress::new(4,20);
-											cur.run_single_compress(seg);
-										}
-										else {
-											let cur = RRDsample::new(20);
-											cur.run_single_compress(seg);
-										}
+
+										self.lossy_comp(seg);
 									},
 									Methods::Gzip => {
 										let pre = GZipCompress::new(10,20);
 										pre.run_decompress(seg);
-										if lossy=="paa"{
-											let cur = PAACompress::new(4,20);
-											cur.run_single_compress(seg);
-										}
-										else {
-											let cur = RRDsample::new(20);
-											cur.run_single_compress(seg);
-										}
+
+										self.lossy_comp(seg);
 									},
 									Methods::Paa(wsize) => {
 										let ws = wsize * 2;
@@ -214,7 +223,6 @@ impl<T,U,F> RecodingDaemon<T,U,F>
 									Methods::Rrd_sample => {
 										// do nothing
 									}
-
 									_ => todo!()
 								}
 								seg.update_comp_times();
