@@ -705,7 +705,7 @@ impl FourierCompress {
 	}
 
 	pub fn fourier_compress_budget_mut<T:Num+FFTnum+ Clone>(&self, seg:&mut Segment<T>, ratio : f64) {
-		let size = seg.get_data().len();
+		let size = seg.get_size();
 		let k = (size as f64 * ratio/2.0) as usize;
 		let mut planner = FFTplanner::new(false);
 		let fft = planner.plan_fft(size);
@@ -723,12 +723,55 @@ impl FourierCompress {
 			vec.push(val.re);
 			vec.push(val.im);
 		}
+		// println!("compressed fft size {}", &vec.len());
 		seg.set_data(vec);
 		seg.set_comp(None);
 		seg.set_method(Methods::Fourier(ratio));
 
 		// skip normalizing by sqr(size), will handle this in decompression step
 
+	}
+
+
+	pub fn fourier_recode_budget_mut<T:Num+FFTnum+ Clone>(&self, seg:&mut Segment<T>, nratio : f64) {
+		let size = seg.get_size();
+		let vec_len =  seg.get_data().len()/2;
+		let k = (size as f64 * nratio/2.0) as usize;
+
+		if vec_len<5 || k>=vec_len {
+
+		}else{
+			seg.data.truncate(2*k);
+
+			seg.set_comp(None);
+			seg.set_method(Methods::Fourier(nratio));
+		}
+
+
+
+		// skip normalizing by sqr(size), will handle this in decompression step
+
+	}
+
+	pub fn decodeVec<T>(&self, vec: &Vec<T>, orig_size:usize) -> Vec<T>
+		where T: Num + FromPrimitive + FFTnum +Clone+ Copy+Into<f64>{
+		let mut planner = FFTplanner::new(true);
+		let size = vec.len();
+		let fft = planner.plan_fft(orig_size);
+		let mut input: Vec<Complex<T>> = vec![Complex::zero(); orig_size];
+		let mut output: Vec<Complex<T>> = vec![Complex::zero(); orig_size];
+		input[0] = Complex::new(vec[0], vec[1]);
+		let mut idx = 2;
+		while idx< size{
+			input[idx/2] = Complex::new(vec[idx], vec[idx+1]);
+			input[orig_size-idx/2] = Complex::new(vec[idx], T::zero() - vec[idx+1]);
+			idx = idx+2;
+		}
+
+		fft.process(&mut input, &mut output);
+
+		let out_vec = output.iter().map(|c| FromPrimitive::from_f64(c.re.into()/orig_size as f64).unwrap()).collect();
+		return out_vec;
 	}
 
 	pub(crate) fn max(&self, bytes: Vec<u8>) -> f64 {
@@ -764,7 +807,7 @@ impl FourierCompress {
 }
 
 impl<'a,T> CompressionMethod<T> for FourierCompress
-	where T: Num + Div + Copy + Add<T, Output = T> + FromPrimitive+FFTnum+Deserialize<'a>+Serialize {
+	where T: Num + Div + Copy + Add<T, Output = T> + Into<f64> + FromPrimitive+FFTnum+Deserialize<'a>+Serialize {
 	fn get_segments(&self) {
 		unimplemented!()
 	}
@@ -775,12 +818,20 @@ impl<'a,T> CompressionMethod<T> for FourierCompress
 
 	fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
 		for seg in segs {
-			self.fourier_compress_budget_mut(seg,0.5);
+			self.fourier_compress_budget_mut(seg,self.ratio);
 		}
 	}
 
+	fn run_single_compress(&self, seg: &mut Segment<T>) {
+		self.fourier_compress_budget_mut(seg,self.ratio);
+	}
+
 	fn run_decompress(&self, seg: &mut Segment<T>) {
-		unimplemented!()
+		let vec =  self.decodeVec(seg.get_data(),seg.get_size());
+		seg.set_comp(None);
+		seg.set_data(vec);
+		seg.set_method(Methods::Uncompr);
+
 	}
 }
 /***************************************************************
@@ -931,8 +982,11 @@ fn test_complex_segment_byte_conversion() {
 			timestamp: SystemTime::now(),
 			signal: 0,
 			data: random_f32complex_signal(x),
+			binary: None,
 			time_lapse: Some(vec![]),
 			prev_seg_offset: None,
+			comp_time: 0,
+			size: 0
 		}).collect();
 
 	let mut converted_segs: Vec<Segment<Complex<f32>>> = segs.iter().map({|seg|
@@ -961,8 +1015,11 @@ fn test_segment_byte_conversion() {
 			timestamp: SystemTime::now(),
 			signal: 0,
 			data: random_f32signal(x),
+			binary: None,
 			time_lapse: Some(vec![]),
 			prev_seg_offset: None,
+			comp_time: 0,
+			size: 0
 		}).collect();
 
 	let mut converted_segs: Vec<Segment<f32>> = segs.iter().map({|seg|
@@ -998,9 +1055,12 @@ fn test_paa_compression() {
 				timestamp: SystemTime::now(),
 				signal: 0,
 				data: data,
-				time_lapse: Some(vec![]),
+		binary: None,
+		time_lapse: Some(vec![]),
 				prev_seg_offset: None,
-			};
+		comp_time: 0,
+		size: 0
+	};
 
 	let seg2 = seg1.clone();
 	let seg3 = seg1.clone();
@@ -1065,8 +1125,11 @@ fn test_paa_compression_int() {
 		timestamp: SystemTime::now(),
 		signal: 0,
 		data: data,
+		binary: None,
 		time_lapse: Some(vec![]),
 		prev_seg_offset: None,
+		comp_time: 0,
+		size: 0
 	};
 
 	let seg2 = seg1.clone();
@@ -1118,3 +1181,33 @@ fn test_key_byte_conversion() {
 	}
 }
 
+#[test]
+fn test_fourier() {
+	let data = vec![-8.267001490320215, -4.701408995824961, -3.9473912522030634, 1.50407251209921, -4.999423104642167, -0.28289749385261587, -0.6753507278963333, -5.326739149145712,
+					-2.1362597150259894, -3.314403760401026, 3.420589457671861, -1.712699288745334, -8.183436090626452, 0.15183842041441586, -2.2802280274023357, 3.279496512365787, 5.247330227129956, -3.9719581135031152,
+					8.01152964472265, -5.48099695985327, 8.170989770876538, -9.129530005554134, -6.593045254202177, -0.8350828824329959, -4.91309022394743, -6.445900409398706, -6.4329687402629565,
+					-6.611464654075149, -3.1816580161523467, -9.887218622891062, 6.962306141809812, 5.091221080349031, -8.24772280500376, -5.096972967331386, 3.085634629993324, 4.232512030886422, 6.530522943413565, 2.984618610720876,
+					8.153663784677978, 2.6321383973434553, -9.41199132494699, 0.0869897646583766, -4.667797464065007, 7.607496844933294, -5.438272397674817, -9.084890536432288, 3.1874721901461953,
+					0.3798605807927693, -2.025513677453528, 6.706578138886233, 0.33282338747066653, -4.306610162957492, -9.827484921553733, 7.807651814568477, -2.006265477115674, -8.505813371648042, -0.9447616205646128, -2.506428732611883,
+					0.4254133276500802, -9.992707546838307, 8.893505303435681, 3.156886237175014, 0.015536746660293588, 5.655429001755028, -7.418224745449836, 4.863129452185156, -2.4838357061064187, 3.9137354423611157,
+					2.2397954007396237, 5.883220460412373, -6.215086648360739, 7.425055753593313, -7.69143693714661, 0.5710216632051797, 4.320316365240407, 9.072729037257837, -7.220428131285665, -8.77069028948311, 1.9955530846071703,
+					-6.188036231770518, 9.095302934925396, 5.584025322601583, -2.995158134634841, 4.92671046289562, -9.571007616192517, 2.7724560669537226, -1.8522905017334796, -2.8380095163670322,
+					6.334988114262327, 7.264121425542719, 1.874283061574129, 9.74422127363868, -9.672811184063907, -8.898637556200882, 6.603350224689084, -0.628918759685682, 8.513223771426471, -8.041579967785776, 8.921911750563325, -9.157191639192238];
+	let size = data.len();
+	let mut seg = Segment {
+		method: None,
+		timestamp: SystemTime::now(),
+		signal: 0,
+		data: data,
+		binary: None,
+		time_lapse: Some(vec![]),
+		prev_seg_offset: None,
+		comp_time: 0,
+		size: size
+	};
+	let fft = FourierCompress::new(2,10, 0.5);
+	fft.fourier_compress_budget_mut(&mut seg,1.0);
+	let vec = fft.decodeVec(seg.get_data(),seg.get_size());
+	println!("{:?}", vec.as_slice())
+
+}

@@ -389,6 +389,6 @@ impl<'a, T> CompressionMethod<T> for SprintzDoubleCompress
         let vec =  self.decode_general(seg.get_comp());
         seg.set_comp(None);
         seg.set_data(vec);
-        seg.set_method(Methods::Sprintz(self.scale));
+        seg.set_method(Methods::Uncompr);
     }
 }

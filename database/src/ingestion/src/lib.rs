@@ -58,7 +58,7 @@ use time_series_start::recoding_daemon::RecodingDaemon;
 const DEFAULT_BUF_SIZE: usize = 150;
 const DEFAULT_DELIM: char = '\n';
 
-pub fn run_single_test(config_file: &str, comp:&str, num_comp:i32, num_recode: i32){
+pub fn run_single_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, num_recode: i32){
 
 	let config = match Loader::from_file(Path::new(config_file)) {
 		Ok(config) => config,
@@ -402,6 +402,12 @@ pub fn run_single_test(config_file: &str, comp:&str, num_comp:i32, num_recode: i
 	};
 
 	let mut comp_handlers = Vec::new();
+	let recoding = match recode{
+		"paa" => {Methods::Paa(1)},
+		"fourier" => {Methods::Fourier(1.0)},
+		"rdd" => {Methods::Rrd_sample},
+		_ => {Methods::Uncompr}
+	};
 
 	for _x in 0..num_comp {
 		match comp{
@@ -489,9 +495,10 @@ pub fn run_single_test(config_file: &str, comp:&str, num_comp:i32, num_recode: i
 	}
 
 	for _x in 0..num_recode {
-		let mut rec:RecodingDaemon<_,DB> = RecodingDaemon::new(*(compre_buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.8,0.8,batch, Methods::Paa(1));
+		let rec_name = recoding.clone();
+		let mut rec:RecodingDaemon<_,DB> = RecodingDaemon::new(*(compre_buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.8,0.8,batch, recoding.clone());
 		let handle = thread::spawn(move || {
-			println!("Run recoding demon" );
+			println!("Run recoding demon with lossy {}", rec_name );
 			rec.run();
 			println!("segment recoded: {}", rec.get_processed() );
 		});

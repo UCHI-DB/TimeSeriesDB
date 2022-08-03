@@ -11,7 +11,7 @@ fn main() {
 	let num_comp = args[4].parse::<i32>().ok().expect("I wasn't given an integer for encoding number!");
 	let num_recode = args[5].parse::<i32>().ok().expect("I wasn't given an integer recoding number!");
 
-	run_single_test(config_file,comp, num_comp, num_recode)
+	run_single_test(config_file,comp, recode,num_comp, num_recode)
 
     
 }

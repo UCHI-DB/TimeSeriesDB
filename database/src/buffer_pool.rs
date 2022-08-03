@@ -11,13 +11,14 @@ use std::ops::Add;
 use std::time::{SystemTime, UNIX_EPOCH};
 use libc::time;
 use num::{FromPrimitive, Num, Signed, zero};
+use rustfft::FFTnum;
 use smartcore::api::{Predictor, PredictorVec};
 use smartcore::cluster::kmeans::KMeans;
 use smartcore::linalg::{BaseVector, Matrix};
 use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 use smartcore::math::num::RealNumber;
 
-use crate::{CompressionMethod, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
+use crate::{CompressionMethod, FourierCompress, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
 
 use segment::{Segment, SegmentKey};
 use crate::compress::rrd_sample::RRDsample;
@@ -597,7 +598,7 @@ impl<T> NoFmClockBuffer<T>
 }
 
 
-pub fn Get_AggStats<T: Num + FromPrimitive + Copy + Send + Into<f64> + PartialOrd + Add<T, Output=T>>(seg: &Segment<T>) -> AggStats<T> {
+pub fn Get_AggStats<T: Num + FromPrimitive + FFTnum+ Copy + Send + Into<f64> + PartialOrd + Add<T, Output=T>>(seg: &Segment<T>) -> AggStats<T> {
     let vec = Get_Decomp(seg);
     return Get_AggStatsFromVec(&vec);
 }
@@ -620,7 +621,7 @@ pub fn Get_AggStatsFromVec<T: Num + FromPrimitive + Copy + Send + Into<f64> + Pa
 }
 
 
-pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + Into<f64> >(seg: &Segment<T>) -> Vec<T> {
+pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + FFTnum + Into<f64> >(seg: &Segment<T>) -> Vec<T> {
     let mut vec = Vec::new();
     let size = seg.get_size();
     match seg.get_method().as_ref().unwrap() {
@@ -641,14 +642,20 @@ pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + Into<f64> >(seg: &Segme
             vec = pre.decode(seg.get_comp());
         }
         Methods::Paa(wsize) => {
-            // println!("compress time: {}, wsize:{}, segment size: {}", seg.get_comp_times(), wsize, size);
+            // println!("compress time: {}, wsize:{}, paa segment size: {}", seg.get_comp_times(), wsize, size);
             let cur = PAACompress::new(*wsize, 20);
             vec = cur.decodeVec(seg.get_data());
             vec.truncate(size);
         }
         Methods::Rrd_sample => {
+            // println!("compress time: {}, rrd segment size: {}", seg.get_comp_times(), size);
             let cur = RRDsample::new(20);
             vec = cur.decode(seg);
+        }
+        Methods::Fourier(ratio) => {
+            // println!("compress times: {}, data len:{}, ratio:{}, fft segment size: {}", seg.get_comp_times(), seg.get_data().len(), ratio, size);
+            let cur = FourierCompress::new(2, 20, *ratio);
+            vec = cur.decodeVec(seg.get_data(),seg.get_size());
         }
         _ => todo!()
     }
@@ -736,7 +743,7 @@ impl<T> AggStats<T> where T: Copy + Send + Add<Output=T> + PartialOrd, {
 
 
 impl<T, U> SegmentBuffer<T> for LRUBuffer<T, U>
-    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num + FromPrimitive + PartialOrd + Into<f64> + Signed + Display+ RealNumber,
+    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num +FFTnum+ FromPrimitive + PartialOrd + Into<f64> + Signed + Display+ RealNumber,
           U: FileManager<Vec<u8>, DBVector> + Sync + Send
 {
     fn get(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>, BufErr> {
@@ -852,7 +859,7 @@ impl<T, U> SegmentBuffer<T> for LRUBuffer<T, U>
 
 
 impl<T, U> LRUBuffer<T, U>
-    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num + FromPrimitive + PartialOrd + Into<f64> + num::Signed + Display+ RealNumber,
+    where T: Copy + Send + Serialize + DeserializeOwned + Debug + FFTnum + Num + FromPrimitive + PartialOrd + Into<f64> + num::Signed + Display+ RealNumber,
           U: FileManager<Vec<u8>, DBVector> + Sync + Send,
 {
     pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T, U> {
@@ -996,7 +1003,7 @@ impl<T, U> LRUBuffer<T, U>
             }
 
             if cnt == 0 {
-                // println!("{:?}",k);
+                // println!("segment size: {}, compress timm:{}, first segment: {:?}", v.value.get_data().len(),v.value.get_comp_times(), &vec[..10]);
                 estearliestn = AggStats::new(agg.max, agg.min, agg.sum, agg.count);
             } else if cnt < n {
                 estearliestn = estearliestn.merge(&agg);

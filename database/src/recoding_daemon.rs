@@ -6,7 +6,7 @@ use crate::segment::{Segment, SegmentKey};
 use std::sync::{Arc,Mutex};
 use crate::buffer_pool::{SegmentBuffer,ClockBuffer};
 use crate::file_handler::{FileManager};
-use crate::{file_handler, GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, PAACompress};
+use crate::{file_handler, GZipCompress, ZlibCompress, DeflateCompress, SnappyCompress, PAACompress, FourierCompress};
 use crate::methods::compress::CompressionMethod;
 use std::any::Any;
 use std::{fs, thread};
@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use num::{FromPrimitive, Num};
 use rand::Rng;
+use rustfft::FFTnum;
 use smartcore::api::Predictor;
 use smartcore::cluster::kmeans::KMeans;
 use smartcore::linalg::Matrix;
@@ -53,7 +54,7 @@ pub struct RecodingDaemon<T,U>
 }
 
 impl<T,U> RecodingDaemon<T,U>
-	where T: 'static + Copy + Send + Serialize + DeserializeOwned + FromPrimitive + Num+ Into<f64> + RealNumber,
+	where T: 'static + Copy + Send + Serialize + DeserializeOwned + FromPrimitive + Num+ FFTnum+Into<f64> + RealNumber,
 		  U: FileManager<Vec<u8>,DBVector> + Sync + Send,
 {
 	pub fn new(seg_buf: Arc<Mutex<SegmentBuffer<T> + Send + Sync>>,
@@ -103,7 +104,7 @@ impl<T,U> RecodingDaemon<T,U>
 					// add random number check to avoid frequent query check
 					let mut rng = rand::thread_rng();
 					let n = rng.gen_range(0, 5);
-					if (n==1){
+					if n==1{
 						buf.run_query();
 					}
 					Err(BufErr::UnderThresh)
@@ -127,6 +128,13 @@ impl<T,U> RecodingDaemon<T,U>
 			Methods::Rrd_sample => {
 				let cur = RRDsample::new(self.batch);
 				cur.run_single_compress(uncomp_seg);
+			}
+			Methods::Fourier(ratio) => {
+				let cur = FourierCompress::new(4,self.batch,0.25);
+				cur.run_single_compress(uncomp_seg);
+				// let res =  cur.decodeVec(uncomp_seg.get_data(),uncomp_seg.get_size());
+				// println!("segment size: {}, compress timm:{}, first segment: {:?}", uncomp_seg.get_data().len(),uncomp_seg.get_comp_times(),&res[..10]);
+
 			}
 			_ => {}
 		}
@@ -219,6 +227,11 @@ impl<T,U> RecodingDaemon<T,U>
 										let cur = PAACompress::new(2,20);
 										cur.run_single_compress(seg);
 										seg.set_method(Methods::Paa(ws));
+									},
+									Methods::Fourier(ratio) => {
+										let r = ratio/2.0;
+										let cur = FourierCompress::new(2,20, r);
+										cur.fourier_recode_budget_mut(seg, r);
 									},
 									Methods::Rrd_sample => {
 										// do nothing

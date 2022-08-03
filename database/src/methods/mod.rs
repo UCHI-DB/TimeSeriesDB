@@ -71,7 +71,9 @@ pub fn IsLossless(m: &Methods) -> bool {
 impl fmt::Display for Methods {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Methods::Fourier (ratio) => write!(f,"{}", format!("Fourier w/ DictionaryId {:?}", ratio)),
+            Methods::Fourier (ratio) => write!(f,"{}", format!("Fourier w/ ratio {:?}", ratio)),
+            Methods::Paa (ws) => write!(f,"{}", format!("Paa w/ window size {:?}", ws)),
+            Methods::Rrd_sample => write!(f,"{}", format!("Round robin data management")),
             Methods::Kernel (id) => write!(f, "{}", format!("Kernel w/ DictionaryId {:?}", id)),
             Methods::SparseLearning (id) => write!(f, "{}", format!("Sparse Learning w/ DictionaryId {:?}", id)),
             Methods::DeepLearning (file) => write!(f, "{}", format!("Deep Learning w/ file {:?}", file)),

@@ -80,7 +80,7 @@ const DEFAULT_BUF_SIZE: usize = 150;
 const DEFAULT_DELIM: char = '\n';
 
 pub fn run_test<T: 'static>(config_file: &str)
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Into<f64> + Float + Lapack + FromStr + From<f32>,
 //		  f64: std::convert::From<T>,
 //		  f32: std::convert::From<T>
 
@@ -481,7 +481,7 @@ pub fn run_test<T: 'static>(config_file: &str)
 
 
 pub fn run_single_test<T: 'static>(config_file: &str, comp:&str, num_comp:i32)
-	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Float + Lapack + FromStr + From<f32>,
+	where T: Copy + Send + Sync + Serialize + DeserializeOwned + Debug + FFTnum + Into<f64>  + Float + Lapack + FromStr + From<f32>,
 {
 
 	let config = match Loader::from_file(Path::new(config_file)) {
