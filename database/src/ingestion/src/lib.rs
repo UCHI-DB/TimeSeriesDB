@@ -404,8 +404,10 @@ pub fn run_single_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, 
 	let mut comp_handlers = Vec::new();
 	let recoding = match recode{
 		"paa" => {Methods::Paa(1)},
-		"fourier" => {Methods::Fourier(1.0)},
-		"rdd" => {Methods::Rrd_sample},
+		"fft" => {Methods::Fourier(1.0)},
+		"pla" => {Methods::Pla(1.0)},
+		"rrd" => {Methods::Rrd_sample},
+		"bufflossy" => {Methods::Bufflossy(10000, 32)},
 		_ => {Methods::Uncompr}
 	};
 

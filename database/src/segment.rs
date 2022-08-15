@@ -738,7 +738,7 @@ impl FourierCompress {
 		let vec_len =  seg.get_data().len()/2;
 		let k = (size as f64 * nratio/2.0) as usize;
 
-		if vec_len<5 || k>=vec_len {
+		if vec_len<80 || k>=vec_len {
 
 		}else{
 			seg.data.truncate(2*k);

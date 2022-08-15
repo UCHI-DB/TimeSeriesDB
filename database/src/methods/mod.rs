@@ -48,12 +48,14 @@ pub enum Methods {
     Gzip,
     Snappy,
     Buff (usize),
+    Bufflossy (usize,usize),
     Paa (usize),
     Fourier (f64),
     Kernel (DictionaryId),
     SparseLearning (DictionaryId),
     DeepLearning (String),
-    Rrd_sample
+    Rrd_sample,
+    Pla (f64)
 }
 
 pub fn IsLossless(m: &Methods) -> bool {
@@ -72,6 +74,9 @@ impl fmt::Display for Methods {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Methods::Fourier (ratio) => write!(f,"{}", format!("Fourier w/ ratio {:?}", ratio)),
+            Methods::Pla (ratio) => write!(f,"{}", format!("PLA lttb w/ ratio {:?}", ratio)),
+            Methods::Buff (scale) => write!(f,"{}", format!("BUFF w/ scale {:?}", scale)),
+            Methods::Bufflossy (scale, bits) => write!(f,"{}", format!("BUFF w/ scale {:?}, bits {:?}", scale, bits)),
             Methods::Paa (ws) => write!(f,"{}", format!("Paa w/ window size {:?}", ws)),
             Methods::Rrd_sample => write!(f,"{}", format!("Round robin data management")),
             Methods::Kernel (id) => write!(f, "{}", format!("Kernel w/ DictionaryId {:?}", id)),

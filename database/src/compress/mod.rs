@@ -6,6 +6,8 @@ pub mod buff_simd;
 pub mod buff_slice;
 pub mod scaled_slice;
 pub mod rrd_sample;
+pub mod pla_lttb;
+pub mod buff_lossy;
 
 use std::{env, fs};
 use crate::client::construct_file_iterator_skip_newline;

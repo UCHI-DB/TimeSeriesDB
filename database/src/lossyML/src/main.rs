@@ -303,6 +303,6 @@ fn main() {
     println!("Homogeneity: {}", homogeneity_score(true_labels, &labels));
     println!("Completeness: {}", completeness_score(true_labels, &labels));
     println!("V Measure: {}", v_measure_score(true_labels, &labels));
-    // println!("true label: {:?}\n test label: {:?}",true_labels, labels);
+    // println!("true label: {:?}\n test label: {:?}\n original label: {:?}",true_labels, labels, origin_labels);
     // println!("kmeans distortion: {}", model.unwrap_err().to_string())
 }

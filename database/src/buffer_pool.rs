@@ -17,10 +17,13 @@ use smartcore::cluster::kmeans::KMeans;
 use smartcore::linalg::{BaseVector, Matrix};
 use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 use smartcore::math::num::RealNumber;
+use smartcore::tree::decision_tree_classifier::DecisionTreeClassifier;
 
 use crate::{CompressionMethod, FourierCompress, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
 
 use segment::{Segment, SegmentKey};
+use crate::compress::buff_lossy::BUFFlossy;
+use crate::compress::pla_lttb::PLACompress;
 use crate::compress::rrd_sample::RRDsample;
 use crate::compress::split_double::SplitBDDoubleCompress;
 use crate::methods::{IsLossless, Methods};
@@ -652,6 +655,16 @@ pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + FFTnum + Into<f64> >(se
             let cur = RRDsample::new(20);
             vec = cur.decode(seg);
         }
+        Methods::Pla(ratio) => {
+            // println!("compress time: {}, rrd segment size: {}", seg.get_comp_times(), size);
+            let cur = PLACompress::new(20,*ratio);
+            vec = cur.decode(seg);
+        }
+        Methods::Bufflossy(scale,bits) => {
+            // println!("compress time: {}, rrd segment size: {}", seg.get_comp_times(), size);
+            let cur = BUFFlossy::new(20,*scale,*bits);
+            vec = cur.decode_general(seg.get_comp());
+        }
         Methods::Fourier(ratio) => {
             // println!("compress times: {}, data len:{}, ratio:{}, fft segment size: {}", seg.get_comp_times(), seg.get_data().len(), ratio, size);
             let cur = FourierCompress::new(2, 20, *ratio);
@@ -691,7 +704,7 @@ pub struct LRUBuffer<T, U>
     buf_size: usize,
     done: bool,
     rlabel: BTreeMap<SegmentKey, Vec<T>>,
-    predictor: Option<KMeans<T>>
+    predictor: Option<DecisionTreeClassifier<T>>
 }
 
 #[derive(Clone, Debug)]
@@ -864,9 +877,13 @@ impl<T, U> LRUBuffer<T, U>
 {
     pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T, U> {
         println!("created LRU comp buffer with budget {} bytes", budget);
-        /* Construct the ML model	 */
-        let ml_content = fs::read_to_string("../lossyML/model/cbf_kmeans.model").expect("Unable to read ML file");
-        let deserialized_kmeans: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+        /* Construct the kmeans model	 */
+        // let ml_content = fs::read_to_string("../lossyML/model/cbf_kmeans.model").expect("Unable to read kmeans file");
+        // let deserialized_kmeans: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+
+        /* Construct the dtree model	 */
+        let ml_content = fs::read_to_string("../lossyML/model/cbf_dtree.model").expect("Unable to read dtree file");
+        let deserialized_kmeans: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
 
         LRUBuffer {
             budget: budget,
@@ -1015,9 +1032,9 @@ impl<T, U> LRUBuffer<T, U>
         }
         let total_label = vector_per_seg*self.buffer.len();
 
-        println!("true earliest max: {}, est max: {}",earliestn.max , estearliestn.max);
-        println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
-        println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
+        // println!("true earliest max: {}, est max: {}",earliestn.max , estearliestn.max);
+        // println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
+        // println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
         println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros(),
                  num::abs((earliestn.max - estearliestn.max) / earliestn.max), num::abs((earliestn.min - estearliestn.min) / earliestn.min),
                  num::abs((earliestn.sum - estearliestn.sum) / earliestn.sum),

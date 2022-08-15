@@ -92,3 +92,5 @@ myroaring = { version = "0.6.5", path = "../../roaring-rs" }
 my-bit-vec = { version = "0.6", path = "../../bit-vec"  }
 smartcore = { path = "../smartcore" }
 serde_json = "1.0"
+lttb = "0.2.0"
+piecewise-linear = "0.1.0"

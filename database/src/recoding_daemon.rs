@@ -21,10 +21,12 @@ use smartcore::linalg::Matrix;
 use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 use smartcore::math::num::RealNumber;
 use crate::buffer_pool::BufErr::BufEmpty;
+use crate::compress::buff_lossy::BUFFlossy;
 use crate::methods::Methods;
 use crate::compress::split_double::SplitBDDoubleCompress;
 use crate::compress::sprintz::SprintzDoubleCompress;
 use crate::compress::gorilla::{GorillaBDCompress, GorillaCompress};
+use crate::compress::pla_lttb::PLACompress;
 use crate::compress::rrd_sample::RRDsample;
 
 pub fn GetMatrix<T:RealNumber> (seg: &Segment<T>) -> DenseMatrix<T>{
@@ -129,6 +131,15 @@ impl<T,U> RecodingDaemon<T,U>
 				let cur = RRDsample::new(self.batch);
 				cur.run_single_compress(uncomp_seg);
 			}
+			Methods::Bufflossy(_,_) => {
+				// this is the dummy bits parameter
+				let cur = BUFFlossy::new(self.batch,10000, 32);
+				cur.run_single_compress(uncomp_seg);
+			}
+			Methods::Pla(ratio) => {
+				let cur = PLACompress::new(self.batch,0.25);
+				cur.run_single_compress(uncomp_seg);
+			}
 			Methods::Fourier(ratio) => {
 				let cur = FourierCompress::new(4,self.batch,0.25);
 				cur.run_single_compress(uncomp_seg);
@@ -223,15 +234,28 @@ impl<T,U> RecodingDaemon<T,U>
 										self.lossy_comp(seg);
 									},
 									Methods::Paa(wsize) => {
-										let ws = wsize * 2;
-										let cur = PAACompress::new(2,20);
-										cur.run_single_compress(seg);
-										seg.set_method(Methods::Paa(ws));
+										if (*wsize<5000){
+											let ws = wsize * 2;
+											let cur = PAACompress::new(2,20);
+											cur.run_single_compress(seg);
+											seg.set_method(Methods::Paa(ws));
+										}
+
 									},
 									Methods::Fourier(ratio) => {
 										let r = ratio/2.0;
 										let cur = FourierCompress::new(2,20, r);
 										cur.fourier_recode_budget_mut(seg, r);
+									},
+									Methods::Pla(ratio) => {
+										let r = ratio/2.0;
+										let cur = PLACompress::new(20, r);
+										cur.pla_recode_budget_mut(seg, r);
+									},
+									Methods::Bufflossy(scale,bits) => {
+										let mut r = bits - 8 - bits%8 ;
+										let cur = BUFFlossy::new(20, *scale, *bits);
+										cur.buff_recode_remove_bits(seg, r);
 									},
 									Methods::Rrd_sample => {
 										// do nothing

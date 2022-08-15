@@ -27,7 +27,9 @@ impl RRDsample {
         let vec = seg.get_data();
         let size = seg.get_size();
         let mut rng = rand::thread_rng();
-        let rand_idx = rng.gen_range(0, size);
+        // let rand_idx = rng.gen_range(0, size);
+        let rand_idx = 0;
+        // println!("rand rdd index: {}", rand_idx);
         let mut new_vec =  Vec::new();
         new_vec.push(vec[rand_idx]);
         seg.set_data(new_vec);
