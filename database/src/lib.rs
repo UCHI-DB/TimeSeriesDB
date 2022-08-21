@@ -39,6 +39,7 @@ mod lcce;
 pub mod kernel;
 pub mod compression_daemon;
 pub mod recoding_daemon;
+pub mod MABcompression_daemon;
 
 use rand::prelude::*;
 use rand::distributions::Uniform;

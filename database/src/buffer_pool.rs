@@ -19,7 +19,7 @@ use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 use smartcore::math::num::RealNumber;
 use smartcore::tree::decision_tree_classifier::DecisionTreeClassifier;
 
-use crate::{CompressionMethod, FourierCompress, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
+use crate::{CompressionMethod, FourierCompress, GorillaCompress, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
 
 use segment::{Segment, SegmentKey};
 use crate::compress::buff_lossy::BUFFlossy;
@@ -636,6 +636,10 @@ pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + FFTnum + Into<f64> >(se
             let pre = SplitBDDoubleCompress::new(10, 20, *scale);
             vec = pre.decode_general(seg.get_comp());
         }
+        Methods::Gorilla => {
+            let pre = GorillaCompress::new(10, 20);
+            vec = pre.decode_general(seg.get_comp());
+        }
         Methods::Snappy => {
             let pre = SnappyCompress::new(10, 20);
             vec = pre.decode(seg.get_comp());
@@ -661,7 +665,7 @@ pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + FFTnum + Into<f64> >(se
             vec = cur.decode(seg);
         }
         Methods::Bufflossy(scale,bits) => {
-            // println!("compress time: {}, rrd segment size: {}", seg.get_comp_times(), size);
+            // println!("compress time: {}, bits size: {}", seg.get_comp_times(), bits);
             let cur = BUFFlossy::new(20,*scale,*bits);
             vec = cur.decode_general(seg.get_comp());
         }
@@ -704,7 +708,7 @@ pub struct LRUBuffer<T, U>
     buf_size: usize,
     done: bool,
     rlabel: BTreeMap<SegmentKey, Vec<T>>,
-    predictor: Option<DecisionTreeClassifier<T>>
+    predictor: Option<KMeans<T>>
 }
 
 #[derive(Clone, Debug)]
@@ -878,12 +882,12 @@ impl<T, U> LRUBuffer<T, U>
     pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T, U> {
         println!("created LRU comp buffer with budget {} bytes", budget);
         /* Construct the kmeans model	 */
-        // let ml_content = fs::read_to_string("../lossyML/model/cbf_kmeans.model").expect("Unable to read kmeans file");
-        // let deserialized_kmeans: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+        let ml_content = fs::read_to_string("../lossyML/model/cbf_kmeans.model").expect("Unable to read kmeans file");
+        let deserialized_kmeans: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
 
         /* Construct the dtree model	 */
-        let ml_content = fs::read_to_string("../lossyML/model/cbf_dtree.model").expect("Unable to read dtree file");
-        let deserialized_kmeans: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+        // let ml_content = fs::read_to_string("../lossyML/model/cbf_dtree.model").expect("Unable to read dtree file");
+        // let deserialized_kmeans: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
 
         LRUBuffer {
             budget: budget,

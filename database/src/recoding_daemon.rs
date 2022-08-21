@@ -105,7 +105,7 @@ impl<T,U> RecodingDaemon<T,U>
 				} else {
 					// add random number check to avoid frequent query check
 					let mut rng = rand::thread_rng();
-					let n = rng.gen_range(0, 5);
+					let n = rng.gen_range(0, 3);
 					if n==1{
 						buf.run_query();
 					}
@@ -229,6 +229,12 @@ impl<T,U> RecodingDaemon<T,U>
 									},
 									Methods::Gzip => {
 										let pre = GZipCompress::new(10,20);
+										pre.run_decompress(seg);
+
+										self.lossy_comp(seg);
+									},
+									Methods::Gorilla => {
+										let pre = GorillaCompress::new(10,20);
 										pre.run_decompress(seg);
 
 										self.lossy_comp(seg);

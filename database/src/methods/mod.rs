@@ -44,17 +44,17 @@ use crate::dictionary::{DictionaryId};
 pub enum Methods {
     Uncompr,    // 0
     Gorilla,
-    Sprintz (usize),
     Gzip,
     Snappy,
+    Sprintz (usize),
     Buff (usize),
-    Bufflossy (usize,usize),
-    Paa (usize),
-    Fourier (f64),
     Kernel (DictionaryId),
     SparseLearning (DictionaryId),
     DeepLearning (String),
     Rrd_sample,
+    Bufflossy (usize,usize),
+    Paa (usize),
+    Fourier (f64),
     Pla (f64)
 }
 

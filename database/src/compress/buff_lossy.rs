@@ -188,6 +188,7 @@ impl BUFFlossy {
 
         let mut remain = self.bits;
         let deltabits = (dlen+ilen) as usize -self.bits;
+        // println!("remain :{}, delta bits:{}", remain, deltabits);
         let mut bytec = 0;
         let mut chunk;
         let mut f_cur = 0f64;
@@ -195,7 +196,7 @@ impl BUFFlossy {
         if remain<8{
             for i in 0..len {
                 cur = bitpack.read_bits(remain as usize).unwrap();
-                expected_datapoints.push(FromPrimitive::from_f64((base_int + (cur<<deltabits) as i64 ) as f64 / dec_scl).unwrap());
+                expected_datapoints.push(FromPrimitive::from_f64((base_int + ((cur as u64)<<deltabits) as i64 ) as f64 / dec_scl).unwrap());
             }
             remain=0
         }
@@ -206,8 +207,11 @@ impl BUFFlossy {
 
             if remain == 0 {
                 for &x in chunk {
-                    expected_datapoints.push(FromPrimitive::from_f64((base_int + (x<<deltabits) as i64) as f64 / dec_scl).unwrap());
+                    expected_datapoints.push(FromPrimitive::from_f64((base_int + ((x as u64)<<deltabits) as i64) as f64 / dec_scl).unwrap());
                 }
+                let x1  = chunk[0];
+                let x2  = chunk[1];
+                // println!("decoded {},{}",x1,x2);
             }
             else{
                 // dec_vec.push((bitpack.read_byte().unwrap() as u32) << remain);
@@ -260,7 +264,19 @@ impl BUFFlossy {
 
     pub fn buff_recode_remove_bits<T: FromPrimitive +Clone+ Copy +Into<f64>>(&self, seg:&mut Segment<T>, bits:usize) {
         let size = seg.get_size();
-        if (bits<8 || bits>=self.bits){
+        if (bits<8 ){
+            // less than one byte, then apply rrd
+            let lossy_vec = self.decode_general(seg.get_comp());
+            let mut n_vec =  Vec::new();
+            let sample: T = lossy_vec[0];
+            n_vec.push( sample);
+            // println!("first value: {}", sample.into());
+            seg.set_comp(None);
+            seg.set_data(n_vec);
+            seg.set_method(Methods::Rrd_sample);
+
+        }
+        else if bits>=self.bits{
 
         }else{
             let delta = self.bits-bits;
