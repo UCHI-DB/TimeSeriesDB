@@ -63,8 +63,8 @@ impl PLACompress {
         let size = seg.get_size();
 
         let mut budget= (self.ratio / 2.0 * size as f64) as usize;
-        if budget <2{
-            budget = 2;
+        if budget <4{
+            budget = 4;
         }
         let mut raw = vec!();
         for (pos, &e) in vec.iter().enumerate() {

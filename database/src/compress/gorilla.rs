@@ -46,14 +46,14 @@ impl GorillaCompress {
             t+=1;
         }
         let duration = start.elapsed();
-        println!("Time elapsed in gorilla function() is: {:?}", duration);
+        // println!("Time elapsed in gorilla function() is: {:?}", duration);
         let origin = t * ((mem::size_of::<T>()) as u64);
         info!("original size:{}", origin);
         let bytes = encoder.close();
         let byte_vec = bytes.to_vec();
         info!("compressed size:{}", byte_vec.len());
         let ratio = (byte_vec.len() as usize) as f64 /origin as f64;
-        print!("{}",ratio);
+        // print!("{}",ratio);
         byte_vec
         //let bytes = compress(seg.convert_to_bytes().unwrap().as_slice());
         //println!("{}", decode_reader(bytes).unwrap());
@@ -88,7 +88,7 @@ impl GorillaCompress {
                 }
             };
         }
-        println!("Number of scan items:{}", expected_datapoints.len());
+        // println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
     }
 
@@ -122,7 +122,7 @@ impl GorillaCompress {
                 }
             };
         }
-        println!("Number of scan items:{}", expected_datapoints.len());
+        // println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
     }
 

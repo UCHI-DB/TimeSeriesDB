@@ -52,6 +52,7 @@ use std::sync::{Arc,Mutex};
 use serde::Serialize;
 use time_series_start::compress::split_double::SplitBDDoubleCompress;
 use time_series_start::MABcompression_daemon::MABCompressionDaemon;
+use time_series_start::MABrecoding_daemon::MABRecodingDaemon;
 use time_series_start::methods::Methods;
 use time_series_start::recoding_daemon::RecodingDaemon;
 
@@ -979,7 +980,7 @@ pub fn run_mab_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, num
 
 	for _x in 0..num_recode {
 		let rec_name = recoding.clone();
-		let mut rec:RecodingDaemon<_,DB> = RecodingDaemon::new(*(compre_buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.8,0.8,batch, recoding.clone());
+		let mut rec:MABRecodingDaemon<_,DB> = MABRecodingDaemon::new(*(compre_buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.8,0.8,batch, recoding.clone());
 		let handle = thread::spawn(move || {
 			println!("Run recoding demon with lossy {}", rec_name );
 			rec.run();

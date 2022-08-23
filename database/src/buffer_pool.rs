@@ -6,11 +6,13 @@ use rocksdb::DBVector;
 use crate::file_handler::{FileManager};
 use std::collections::vec_deque::Drain;
 use std::collections::hash_map::{HashMap, Entry};
-use std::fs;
+use std::{fmt, fs};
 use std::ops::Add;
 use std::time::{SystemTime, UNIX_EPOCH};
 use libc::time;
 use num::{FromPrimitive, Num, Signed, zero};
+use rl_bandit::bandit::{Bandit, UpdateType};
+use rl_bandit::bandits::egreedy::EGreedy;
 use rustfft::FFTnum;
 use smartcore::api::{Predictor, PredictorVec};
 use smartcore::cluster::kmeans::KMeans;
@@ -80,6 +82,11 @@ pub trait SegmentBuffer<T: Copy + Send> {
      * of the buffer untouched
      */
     fn drain(&mut self) -> Drain<Segment<T>> {
+        unimplemented!()
+    }
+
+    /* provide encoding suggestion for the recoding daemon, only implemented by LRU cache */
+    fn get_recommend(&self) -> (usize,usize,usize) {
         unimplemented!()
     }
 
@@ -660,12 +667,12 @@ pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + FFTnum + Into<f64> >(se
             vec = cur.decode(seg);
         }
         Methods::Pla(ratio) => {
-            // println!("compress time: {}, rrd segment size: {}", seg.get_comp_times(), size);
+            // println!("compress time: {}, PLA segment size: {}", seg.get_comp_times(), size);
             let cur = PLACompress::new(20,*ratio);
             vec = cur.decode(seg);
         }
         Methods::Bufflossy(scale,bits) => {
-            // println!("compress time: {}, bits size: {}", seg.get_comp_times(), bits);
+            // println!("compress time: {}, buff lossy bits size: {}", seg.get_comp_times(), bits);
             let cur = BUFFlossy::new(20,*scale,*bits);
             vec = cur.decode_general(seg.get_comp());
         }
@@ -686,13 +693,21 @@ pub fn Err_Eval<T:PartialEq>(va: &Vec<T>,vb: &Vec<T>)-> usize{
     return err;
 }
 
+
+impl<T, U> fmt::Debug for LRUBuffer<T, U>
+    where T: Copy + Send + RealNumber,
+          U: FileManager<Vec<u8>, DBVector> + Sync + Send{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "LRU buffer with budget [{}]", self.budget)
+    }
+}
+
 /***************************************************************
  ************************LRUcomp_Buffer************************
  ***************************************************************/
 /* LRU based compression with limited space budget.
 Use double linked list to achieve O(1) get and put time complexity*/
 
-#[derive(Debug)]
 pub struct LRUBuffer<T, U>
     where T: Copy + Send + RealNumber,
           U: FileManager<Vec<u8>, DBVector> + Sync + Send
@@ -704,11 +719,16 @@ pub struct LRUBuffer<T, U>
     tail: Option<SegmentKey>,
     buffer: BTreeMap<SegmentKey, Node<T>>,
     agg_stats: BTreeMap<SegmentKey, AggStats<T>>,
+    est_agg_stats: BTreeMap<SegmentKey, AggStats<T>>,
     file_manager: U,
     buf_size: usize,
     done: bool,
     rlabel: BTreeMap<SegmentKey, Vec<T>>,
-    predictor: Option<KMeans<T>>
+    plabel: BTreeMap<SegmentKey, Vec<T>>,
+    predictor: Option<KMeans<T>>,
+    mab_250: EGreedy,
+    mab_125: EGreedy,
+    mab_000: EGreedy
 }
 
 #[derive(Clone, Debug)]
@@ -721,9 +741,9 @@ struct Node<T>
 }
 
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct AggStats<T>
-    where T: Copy + Send, {
+    where T: Copy + Send + Clone, {
     max: T,
     min: T,
     sum: T,
@@ -872,6 +892,10 @@ impl<T, U> SegmentBuffer<T> for LRUBuffer<T, U>
     fn exceed_batch(&self, batchsize: usize) -> bool {
         return self.buffer.len() >= batchsize;
     }
+
+    fn get_recommend(&self) -> (usize,usize,usize){
+        return self.get_recommend();
+    }
 }
 
 
@@ -896,11 +920,16 @@ impl<T, U> LRUBuffer<T, U>
             tail: None,
             buffer: BTreeMap::new(),
             agg_stats: BTreeMap::new(),
+            est_agg_stats: BTreeMap::new(),
             file_manager: file_manager,
             buf_size: 0,
             done: false,
             rlabel: BTreeMap::new(),
-            predictor: Some(deserialized_kmeans)
+            plabel: BTreeMap::new(),
+            predictor: Some(deserialized_kmeans),
+            mab_250: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
+            mab_125: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
+            mab_000: EGreedy::new(4, 0.1, 0.0, UpdateType::Average)
         }
     }
 
@@ -964,21 +993,14 @@ impl<T, U> LRUBuffer<T, U>
         }
 
         cnt = 0;
-        let mut agg;
-        for (k, v) in self.buffer.iter().rev() {
-            let vec = Get_Decomp(&v.value);
-            let size = &v.value.get_size();
-            agg = Get_AggStatsFromVec(&vec);
-            // println!("reverse lossless {}", IsLossless(&v.value.get_method().as_ref().unwrap()));
-            if !IsLossless(&v.value.get_method().as_ref().unwrap()) {
-                // println!("vec size {}", size);
-                let label = self.predictor.as_ref().unwrap().predictVec(&vec, size/1000);
-                let cur_err = Err_Eval(&label, self.rlabel.get(k).unwrap());
-                if (cnt<n){
-                    lastNerr += cur_err;
-                }
-                totalErr += cur_err;
+        for (k, v) in self.est_agg_stats.iter().rev() {
+            let agg = v;
+            let plabels = self.plabel.get(k).unwrap();
+            let cur_err = Err_Eval(plabels, self.rlabel.get(k).unwrap());
+            if (cnt<n){
+                lastNerr += cur_err;
             }
+            totalErr += cur_err;
 
             if cnt == 0 {
                 // println!("{:?}",k);
@@ -1011,16 +1033,12 @@ impl<T, U> LRUBuffer<T, U>
         }
 
         cnt = 0;
-        for (k, v) in self.buffer.iter() {
-            let vec = Get_Decomp(&v.value);
-            let size = v.value.get_size();
-            agg = Get_AggStatsFromVec(&vec);
-            if !IsLossless(&v.value.get_method().as_ref().unwrap()) {
-                let label = self.predictor.as_ref().unwrap().predictVec(&vec,size/1000);
-                let cur_err = Err_Eval(&label, self.rlabel.get(k).unwrap());
-                if (cnt<n){
-                    firstNerr += cur_err;
-                }
+        for (k, v) in self.est_agg_stats.iter() {
+            let agg = v;
+            let plabels = self.plabel.get(k).unwrap();
+            let cur_err = Err_Eval(plabels, self.rlabel.get(k).unwrap());
+            if (cnt<n){
+                firstNerr += cur_err;
             }
 
             if cnt == 0 {
@@ -1049,19 +1067,93 @@ impl<T, U> LRUBuffer<T, U>
         )
     }
 
+    fn update_mab(&mut self, m: &Methods, acc: f64){
+        let mut ratio = 0.0;
+        let c = 1.0;
+        match m {
+            Methods::Bufflossy(_,bits) => {
+                // only for bits >= 8, fall back to rrd otherwise
+                ratio = (*bits) as f64/64.0;
+                if ratio>=0.25 {
+                    self.mab_250.update(0, acc/(c+ratio));
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(0, acc/(c+ratio));
+                }
+            }
+            Methods::Rrd_sample => {
+                // only for 1 sample, so no value for mab125 and mab 250.
+                ratio = 1.0/10000.0;
+                self.mab_000.update(0, acc/(c+ratio));
+            }
+            Methods::Paa(wsize) => {
+                ratio = 1.0/(*wsize) as f64;
+                if ratio>=0.25 {
+                    self.mab_250.update(1, acc/(c+ratio));
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(1, acc/(c+ratio));
+                }
+                else{
+                    self.mab_000.update(1, acc/(c+ratio));
+                }
+            }
+            Methods::Fourier(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(2, acc/(c+ratio));
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(2, acc/(c+ratio));
+                }
+                else{
+                    self.mab_000.update(2, acc/(c+ratio));
+                }
+
+            }
+            Methods::Pla(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(3, acc/(c+ratio));
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(3, acc/(c+ratio));
+                }
+                else{
+                    self.mab_000.update(3, acc/(c+ratio));
+                }
+            }
+            _ => {panic!("lossy compression is not supported by LRU");}
+        }
+
+    }
+
+    fn get_recommend(&self) -> (usize,usize,usize){
+        return (self.mab_250.choose(),self.mab_125.choose(),self.mab_000.choose());
+    }
+
     fn push_back_node(&mut self, key: SegmentKey, value: Segment<T>) {
         let size = value.get_byte_size().unwrap();
         let entry_size = value.get_size();
-        // update aggstats for query accuracy profiling
+        // update aggstats and ML labels for query accuracy profiling
         if IsLossless(value.get_method().as_ref().unwrap()) {
             // println!("buffer size: {}, agg stats size: {}",self.buffer.len(), self.agg_stats.len() );
             let vec = Get_Decomp(&value);
             if !self.rlabel.contains_key(&key){
                 // println!("vec size {}", size);
                 let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
-                self.rlabel.insert(key, label);
+                self.rlabel.insert(key, label.clone());
+                self.plabel.insert(key, label);
             }
-            self.agg_stats.insert(key, Get_AggStatsFromVec(&vec));
+            let stats =  Get_AggStatsFromVec(&vec);
+            self.agg_stats.insert(key,stats.clone());
+            self.est_agg_stats.insert(key, stats);
+        }
+        else {
+            let vec = Get_Decomp(&value);
+            let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+            let acc =  1.0 - Err_Eval(&label, self.rlabel.get(&key).unwrap()) as f64/ label.len() as f64;
+            self.plabel.insert(key, label);
+            self.est_agg_stats.insert(key, Get_AggStatsFromVec(&vec));
+            self.update_mab(value.get_method().as_ref().unwrap(),acc);
         }
 
         let mut node = Node {

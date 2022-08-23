@@ -436,7 +436,7 @@ impl SplitBDDoubleCompress {
             prec = (self.scale as f32).log10() as i32;
         }
         let prec_delta = get_precision_bound(prec);
-        println!("precision {}, precision delta:{}", prec, prec_delta);
+        // println!("precision {}, precision delta:{}", prec, prec_delta);
 
         let mut bound = PrecisionBound::new(prec_delta);
         // let start1 = Instant::now();
@@ -457,7 +457,7 @@ impl SplitBDDoubleCompress {
         }
         let delta = max-min;
         let base_fixed = min;
-        println!("base integer: {}, max:{}",base_fixed,max);
+        // println!("base integer: {}, max:{}",base_fixed,max);
         let ubase_fixed = unsafe { mem::transmute::<i64, u64>(base_fixed) };
         let base_fixed64:i64 = base_fixed;
         let mut single_val = false;
@@ -472,7 +472,7 @@ impl SplitBDDoubleCompress {
         bound.set_length((cal_int_length as u64-dec_len), dec_len);
         let ilen = fixed_len -dec_len as usize;
         let dlen = dec_len as usize;
-        println!("int_len:{},dec_len:{}",ilen as u64,dec_len);
+        // println!("int_len:{},dec_len:{}",ilen as u64,dec_len);
         let mut bitpack_vec = BitPack::<Vec<u8>>::with_capacity(8);
         bitpack_vec.write(ubase_fixed as u32,32);
         bitpack_vec.write((ubase_fixed>>32) as u32,32);
@@ -513,7 +513,7 @@ impl SplitBDDoubleCompress {
                     cur_u64
                 }).collect_vec();
             }
-            println!("write the {}th byte of dec",bytec);
+            // println!("write the {}th byte of dec",bytec);
 
             while (remain>=8){
                 bytec+=1;
@@ -530,14 +530,14 @@ impl SplitBDDoubleCompress {
                 }
 
 
-                println!("write the {}th byte of dec",bytec);
+                // println!("write the {}th byte of dec",bytec);
             }
             if (remain>0){
                 bitpack_vec.finish_write_byte();
                 for d in fixed_u64 {
                     bitpack_vec.write_bits(d as u32, remain as usize).unwrap();
                 }
-                println!("write remaining {} bits of dec",remain);
+                // println!("write remaining {} bits of dec",remain);
             }
         }
 
@@ -552,7 +552,7 @@ impl SplitBDDoubleCompress {
         info!("original size:{}", origin);
         info!("compressed size:{}", vec.len());
         let ratio = vec.len() as f64 /origin as f64;
-        print!("{}",ratio);
+        // println!("{}",ratio);
         vec
         //let bytes = compress(seg.convert_to_bytes().unwrap().as_slice());
         //println!("{}", decode_reader(bytes).unwrap());
@@ -4032,11 +4032,11 @@ impl SplitBDDoubleCompress {
         let higher = bitpack.read(32).unwrap();
         let ubase_int= (lower as u64)|((higher as u64)<<32);
         let base_int = unsafe { mem::transmute::<u64, i64>(ubase_int) };
-        println!("base integer: {}",base_int);
+        // println!("base integer: {}",base_int);
         let len = bitpack.read(32).unwrap();
-        println!("total vector size:{}",len);
+        // println!("total vector size:{}",len);
         let ilen = bitpack.read(32).unwrap();
-        println!("bit packing length:{}",ilen);
+        // println!("bit packing length:{}",ilen);
         let dlen = bitpack.read(32).unwrap();
         bound.set_length(ilen as u64, dlen as u64);
         // check integer part and update bitmap;
@@ -4046,7 +4046,7 @@ impl SplitBDDoubleCompress {
         let mut fixed_vec:Vec<u64> = Vec::new();
 
         let mut dec_scl:f64 = 2.0f64.powi(dlen as i32);
-        println!("Scale for decimal:{}", dec_scl);
+        // println!("Scale for decimal:{}", dec_scl);
 
         let mut remain = dlen+ilen;
         let mut bytec = 0;
@@ -4081,7 +4081,7 @@ impl SplitBDDoubleCompress {
                     fixed_vec.push(((*x) as u64)<<remain)
                 }
             }
-            println!("read the {}th byte of dec",bytec);
+            // println!("read the {}th byte of dec",bytec);
 
             while (remain>=8){
                 bytec+=1;
@@ -4098,13 +4098,13 @@ impl SplitBDDoubleCompress {
                 }
 
 
-                println!("read the {}th byte of dec",bytec);
+                // println!("read the {}th byte of dec",bytec);
             }
 
             if (remain>0){
                 bitpack.finish_read_byte();
-                println!("read remaining {} bits of dec",remain);
-                println!("length for fixed:{}", fixed_vec.len());
+                // println!("read remaining {} bits of dec",remain);
+                // println!("length for fixed:{}", fixed_vec.len());
                 for cur_fixed in fixed_vec.into_iter(){
                     f_cur = (base_int + ((cur_fixed)|(bitpack.read_bits( remain as usize).unwrap() as u64)) as i64) as f64 / dec_scl;
                     // todo: this is for value reconstruction
@@ -4113,7 +4113,7 @@ impl SplitBDDoubleCompress {
             }
         }
 
-        println!("Number of scan items:{}", expected_datapoints.len());
+        // println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
     }
 

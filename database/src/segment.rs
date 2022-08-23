@@ -645,7 +645,7 @@ impl PAACompress {
 }
 
 impl<T> CompressionMethod<T> for PAACompress
-	where T: Num + Div + Copy + Add<T, Output = T> + FromPrimitive{
+	where T: Num + Div + Copy + Add<T, Output = T> + FromPrimitive + Into<f64>{
 	fn get_segments(&self) {
 		unimplemented!()
 	}
@@ -665,11 +665,11 @@ impl<T> CompressionMethod<T> for PAACompress
 	}
 
 	fn run_decompress(&self, seg: &mut Segment<T>) {
-		unimplemented!()
-		// let vec =  self.decodeVec(seg.get_data());
-		// seg.set_comp(None);
-		// seg.set_data(vec);
-		// seg.set_method(Methods::Gzip);
+		let mut vec =  self.decodeVec(seg.get_data());
+		vec.truncate(seg.get_size());
+		seg.set_comp(None);
+		seg.set_data(vec);
+		seg.set_method(Methods::Uncompr);
 	}
 }
 

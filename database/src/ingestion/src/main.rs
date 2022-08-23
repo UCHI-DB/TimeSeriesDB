@@ -12,6 +12,7 @@ fn main() {
 	let num_recode = args[5].parse::<i32>().ok().expect("I wasn't given an integer recoding number!");
 
 	run_mab_test(config_file,comp, recode,num_comp, num_recode)
+	// run_single_test(config_file,comp, recode,num_comp, num_recode)
 
     
 }

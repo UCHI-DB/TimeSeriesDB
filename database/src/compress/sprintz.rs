@@ -54,7 +54,7 @@ impl SprintzDoubleCompress {
             expected_datapoints.push((cur_int as f64)/scl);
             pre = cur_int;
         }
-        println!("Number of scan items:{}", expected_datapoints.len());
+        // println!("Number of scan items:{}", expected_datapoints.len());
         expected_datapoints
     }
 
