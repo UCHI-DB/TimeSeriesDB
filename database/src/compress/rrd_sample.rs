@@ -1,6 +1,6 @@
 use crate::segment::Segment;
 use serde::{Serialize, Deserialize};
-use crate::methods::bit_packing::{sprintz_double_encoder, BitPack, unzigzag};
+use crate::methods::bit_packing::{ BitPack, unzigzag};
 use std::mem;
 use croaring::Bitmap;
 use std::time::Instant;
@@ -32,7 +32,9 @@ impl RRDsample {
         // println!("rand rdd index: {}", rand_idx);
         let mut new_vec =  Vec::new();
         new_vec.push(vec[rand_idx]);
+        // println!("rand rdd length: {}", new_vec.len());
         seg.set_data(new_vec);
+        seg.set_method(Methods::Rrd_sample);
     }
 
 
@@ -71,14 +73,11 @@ impl<'a, T> CompressionMethod<T> for RRDsample
     }
 
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
-        let start = Instant::now();
         for seg in segs {
             self.encodeVec(seg);
             seg.set_method(Methods::Rrd_sample);
         }
 
-        let duration = start.elapsed();
-//        println!("Time elapsed in sprintz function() is: {:?}", duration);
     }
 
     fn run_single_compress(&self, seg: &mut Segment<T>) {

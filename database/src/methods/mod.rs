@@ -65,7 +65,12 @@ pub fn IsLossless(m: &Methods) -> bool {
         Methods::Sprintz(_) => true,
         Methods::Gzip => true,
         Methods::Snappy => true,
-        Methods::Buff(scale_) => true,
+        Methods::Buff(_) => true,
+        Methods::Rrd_sample => false,
+        Methods::Bufflossy (_,_) => false,
+        Methods::Paa (_) => false,
+        Methods::Fourier (_) => false,
+        Methods::Pla(_) => false,
         _ => {  false },
     }
 }
@@ -76,6 +81,7 @@ impl fmt::Display for Methods {
             Methods::Fourier (ratio) => write!(f,"{}", format!("Fourier w/ ratio {:?}", ratio)),
             Methods::Pla (ratio) => write!(f,"{}", format!("PLA lttb w/ ratio {:?}", ratio)),
             Methods::Buff (scale) => write!(f,"{}", format!("BUFF w/ scale {:?}", scale)),
+            Methods::Sprintz (scale) => write!(f,"{}", format!("Sprintz w/ scale {:?}", scale)),
             Methods::Bufflossy (scale, bits) => write!(f,"{}", format!("BUFF w/ scale {:?}, bits {:?}", scale, bits)),
             Methods::Paa (ws) => write!(f,"{}", format!("Paa w/ window size {:?}", ws)),
             Methods::Rrd_sample => write!(f,"{}", format!("Round robin data management")),

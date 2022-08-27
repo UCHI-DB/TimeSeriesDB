@@ -10,9 +10,14 @@ fn main() {
 	let recode = &args[3];
 	let num_comp = args[4].parse::<i32>().ok().expect("I wasn't given an integer for encoding number!");
 	let num_recode = args[5].parse::<i32>().ok().expect("I wasn't given an integer recoding number!");
+	let mab = args[6].parse::<bool>().ok().expect("I wasn't given an boolean!");
 
-	run_mab_test(config_file,comp, recode,num_comp, num_recode)
-	// run_single_test(config_file,comp, recode,num_comp, num_recode)
+	if mab{
+		run_mab_test(config_file,comp, recode,num_comp, num_recode);
+	}
+	else{
+		run_single_test(config_file,comp, recode,num_comp, num_recode)
+	}
 
     
 }

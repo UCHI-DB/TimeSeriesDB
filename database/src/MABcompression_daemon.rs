@@ -51,7 +51,7 @@ impl<T,U,F> MABCompressionDaemon<T,U,F>
 			uncomp_threshold: uncomp_threshold,
 			processed: 0,
 			compress_method: compress_method,
-			mab: EGreedy::new(5, 0.1, 0.0, UpdateType::Average)
+			mab: EGreedy::new(5, 0.05, 0.0, UpdateType::Average)
 		}
 	}
 
@@ -108,7 +108,7 @@ impl<T,U,F> MABCompressionDaemon<T,U,F>
 					}
 				}
 				println!("buffer total bytes: {},{}",SystemTime::now().duration_since(UNIX_EPOCH)
-					.unwrap().as_micros(),buf.get_buffer_size());
+					.unwrap().as_micros() as f64/1000000.0,buf.get_buffer_size());
 				return Ok(());
 			}
 			Err(_) => Err(BufErr::CantGrabMutex),

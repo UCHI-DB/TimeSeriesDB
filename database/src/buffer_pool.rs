@@ -1054,10 +1054,10 @@ impl<T, U> LRUBuffer<T, U>
         }
         let total_label = vector_per_seg*self.buffer.len();
 
-        // println!("true earliest max: {}, est max: {}",earliestn.max , estearliestn.max);
-        // println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
-        // println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
-        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros(),
+        println!("true earliest max: {}, est max: {}",earliestn.max , estearliestn.max);
+        println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
+        println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
+        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,
                  num::abs((earliestn.max - estearliestn.max) / earliestn.max), num::abs((earliestn.min - estearliestn.min) / earliestn.min),
                  num::abs((earliestn.sum - estearliestn.sum) / earliestn.sum),
                  num::abs((latestn.max - estlatestn.max) / latestn.max), num::abs((latestn.min - estlatestn.min) / latestn.min),
@@ -1133,28 +1133,6 @@ impl<T, U> LRUBuffer<T, U>
     fn push_back_node(&mut self, key: SegmentKey, value: Segment<T>) {
         let size = value.get_byte_size().unwrap();
         let entry_size = value.get_size();
-        // update aggstats and ML labels for query accuracy profiling
-        if IsLossless(value.get_method().as_ref().unwrap()) {
-            // println!("buffer size: {}, agg stats size: {}",self.buffer.len(), self.agg_stats.len() );
-            let vec = Get_Decomp(&value);
-            if !self.rlabel.contains_key(&key){
-                // println!("vec size {}", size);
-                let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
-                self.rlabel.insert(key, label.clone());
-                self.plabel.insert(key, label);
-            }
-            let stats =  Get_AggStatsFromVec(&vec);
-            self.agg_stats.insert(key,stats.clone());
-            self.est_agg_stats.insert(key, stats);
-        }
-        else {
-            let vec = Get_Decomp(&value);
-            let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
-            let acc =  1.0 - Err_Eval(&label, self.rlabel.get(&key).unwrap()) as f64/ label.len() as f64;
-            self.plabel.insert(key, label);
-            self.est_agg_stats.insert(key, Get_AggStatsFromVec(&vec));
-            self.update_mab(value.get_method().as_ref().unwrap(),acc);
-        }
 
         let mut node = Node {
             next: None,
@@ -1237,12 +1215,41 @@ impl<T, U> LRUBuffer<T, U>
 
 
     fn put_with_key(&mut self, key: SegmentKey, seg: Segment<T>) -> Result<(), BufErr> {
+        // update aggstats and ML labels for query accuracy profiling
+        let entry_size = seg.get_size();
+        let size = seg.get_byte_size().unwrap();
+        // println!("recode method: {:?}",seg.get_method().as_ref().unwrap());
+        if IsLossless(seg.get_method().as_ref().unwrap())==true {
+            // println!("buffer size: {}, agg stats size: {}",self.buffer.len(), self.agg_stats.len() );
+            let vec = Get_Decomp(&seg);
+            if !self.rlabel.contains_key(&key){
+                // println!("vec size {}", size);
+                let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+                self.rlabel.insert(key, label.clone());
+                self.plabel.insert(key, label);
+            }
+            let stats =  Get_AggStatsFromVec(&vec);
+            self.agg_stats.insert(key,stats.clone());
+            self.est_agg_stats.insert(key, stats);
+        }
+        else {
+            let vec = Get_Decomp(&seg);
+            // println!("vec size {}", size);
+            let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+            // println!("plabel {:?}", &label);
+            // println!("rlabel {:?}", self.rlabel.get(&key).unwrap());
+            let acc =  1.0 - Err_Eval(&label, self.rlabel.get(&key).unwrap()) as f64/ label.len() as f64;
+            self.plabel.insert(key, label);
+            self.est_agg_stats.insert(key, Get_AggStatsFromVec(&vec));
+            self.update_mab(seg.get_method().as_ref().unwrap(),acc);
+        }
+
         match self.get(key) {
             Some(v) => {
                 self.cur_size -= v.get_byte_size().unwrap();
-                let size = &seg.get_byte_size().unwrap();
+                let nsize = &seg.get_byte_size().unwrap();
                 self.buffer.get_mut(&key).unwrap().value = seg;
-                self.cur_size += size;
+                self.cur_size += nsize;
                 return Ok(());
             }
             None => {}
