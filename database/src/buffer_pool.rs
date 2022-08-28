@@ -16,9 +16,14 @@ use rl_bandit::bandits::egreedy::EGreedy;
 use rustfft::FFTnum;
 use smartcore::api::{Predictor, PredictorVec};
 use smartcore::cluster::kmeans::KMeans;
+use smartcore::ensemble::random_forest_classifier::RandomForestClassifier;
 use smartcore::linalg::{BaseVector, Matrix};
 use smartcore::linalg::naive::dense_matrix::DenseMatrix;
+use smartcore::math::distance::Distance;
+use smartcore::math::distance::euclidian::Euclidian;
 use smartcore::math::num::RealNumber;
+use smartcore::naive_bayes::gaussian::GaussianNB;
+use smartcore::neighbors::knn_classifier::KNNClassifier;
 use smartcore::tree::decision_tree_classifier::DecisionTreeClassifier;
 
 use crate::{CompressionMethod, FourierCompress, GorillaCompress, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
@@ -694,7 +699,7 @@ pub fn Err_Eval<T:PartialEq>(va: &Vec<T>,vb: &Vec<T>)-> usize{
 }
 
 
-impl<T, U> fmt::Debug for LRUBuffer<T, U>
+impl<'a, T, U> fmt::Debug for LRUBuffer<'a, T, U>
     where T: Copy + Send + RealNumber,
           U: FileManager<Vec<u8>, DBVector> + Sync + Send{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -708,9 +713,9 @@ impl<T, U> fmt::Debug for LRUBuffer<T, U>
 /* LRU based compression with limited space budget.
 Use double linked list to achieve O(1) get and put time complexity*/
 
-pub struct LRUBuffer<T, U>
+pub struct LRUBuffer<'a, T, U>
     where T: Copy + Send + RealNumber,
-          U: FileManager<Vec<u8>, DBVector> + Sync + Send
+          U: FileManager<Vec<u8>, DBVector> + Sync + Send,
 
 {
     budget: usize,
@@ -725,7 +730,8 @@ pub struct LRUBuffer<T, U>
     done: bool,
     rlabel: BTreeMap<SegmentKey, Vec<T>>,
     plabel: BTreeMap<SegmentKey, Vec<T>>,
-    predictor: Option<KMeans<T>>,
+    predictor: Box<PredictorVec<T>+'a>,
+    // predictor: Option<KMeans<T>,
     mab_250: EGreedy,
     mab_125: EGreedy,
     mab_000: EGreedy
@@ -778,140 +784,47 @@ impl<T> AggStats<T> where T: Copy + Send + Add<Output=T> + PartialOrd, {
 }
 
 
-
-impl<T, U> SegmentBuffer<T> for LRUBuffer<T, U>
-    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num +FFTnum+ FromPrimitive + PartialOrd + Into<f64> + Signed + Display+ RealNumber,
-          U: FileManager<Vec<u8>, DBVector> + Sync + Send
-{
-    fn get(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>, BufErr> {
-        if self.retrieve(key)? {
-            match self.buffer.get(&key) {
-                Some(seg) => Ok(Some(&seg.value)),
-                None => Err(BufErr::GetFail),
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn get_mut(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>, BufErr> {
-        if self.retrieve(key)? {
-            match self.buffer.get_mut(&key) {
-                Some(seg) => Ok(Some(&seg.value)),
-                None => Err(BufErr::GetMutFail),
-            }
-        } else {
-            Ok(None)
-        }
-    }
-
-
-    fn is_done(&self) -> bool {
-        self.done
-    }
-
-    fn run_query(&self) {
-        self.evaluate_query();
-    }
-
-    #[inline]
-    fn put(&mut self, seg: Segment<T>) -> Result<(), BufErr> {
-        let seg_key = seg.get_key();
-        self.put_with_key(seg_key, seg)
-    }
-
-
-    fn drain(&mut self) -> Drain<Segment<T>> {
-        unimplemented!()
-    }
-
-    fn copy(&self) -> Vec<Segment<T>> {
-        self.buffer.values().map(|x| x.value.clone()).collect()
-    }
-
-    /* Write to file system */
-    fn persist(&self) -> Result<(), BufErr> {
-        for (seg_key, seg) in self.buffer.iter() {
-            let seg_key_bytes = match seg_key.convert_to_bytes() {
-                Ok(bytes) => bytes,
-                Err(_) => return Err(BufErr::FailedSegKeySer),
-            };
-            let seg_bytes = match seg.value.convert_to_bytes() {
-                Ok(bytes) => bytes,
-                Err(_) => return Err(BufErr::FailedSegSer),
-            };
-
-            match self.file_manager.fm_write(seg_key_bytes, seg_bytes) {
-                Err(_) => return Err(BufErr::FileManagerErr),
-                _ => (),
-            }
-        }
-
-        Ok(())
-    }
-
-    fn flush(&mut self) {
-        self.buffer.clear();
-        self.done = true;
-    }
-
-
-    fn exceed_threshold(&self, threshold: f32) -> bool {
-        // println!("{}%full, threshold:{}",(self.cur_size as f32 / self.budget as f32 as f32), threshold);
-        return (self.cur_size as f32 / self.budget as f32) >= threshold;
-    }
-
-    fn get_buffer_size(&self) -> usize {
-        self.cur_size
-    }
-
-
-    fn remove_segment(&mut self) -> Result<Segment<T>, BufErr> {
-        match self.head {
-            None => {
-                return Err(BufErr::BufEmpty);
-            }
-            Some(head) => {
-                match self.get(head) {
-                    Some(v) => {
-                        return Ok(v);
-                    }
-                    None => {
-                        return Err(BufErr::GetFail);
-                    }
-                }
-            }
-        }
-    }
-
-    fn idle_threshold(&self, threshold: f32) -> bool {
-        //println!("{}full, threshold:{}",(self.buffer.len() as f32 / self.buf_size as f32), threshold);
-        return (self.cur_size as f32 / self.budget as f32) < threshold;
-    }
-
-    fn exceed_batch(&self, batchsize: usize) -> bool {
-        return self.buffer.len() >= batchsize;
-    }
-
-    fn get_recommend(&self) -> (usize,usize,usize){
-        return self.get_recommend();
-    }
-}
-
-
-impl<T, U> LRUBuffer<T, U>
+impl<'a, T, U> LRUBuffer<'a, T, U>
     where T: Copy + Send + Serialize + DeserializeOwned + Debug + FFTnum + Num + FromPrimitive + PartialOrd + Into<f64> + num::Signed + Display+ RealNumber,
-          U: FileManager<Vec<u8>, DBVector> + Sync + Send,
-{
-    pub fn new(budget: usize, file_manager: U) -> LRUBuffer<T, U> {
-        println!("created LRU comp buffer with budget {} bytes", budget);
-        /* Construct the kmeans model	 */
-        let ml_content = fs::read_to_string("../lossyML/model/cbf_kmeans.model").expect("Unable to read kmeans file");
-        let deserialized_kmeans: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+          U: FileManager<Vec<u8>, DBVector> + Sync + Send
 
-        /* Construct the dtree model	 */
-        // let ml_content = fs::read_to_string("../lossyML/model/cbf_dtree.model").expect("Unable to read dtree file");
-        // let deserialized_kmeans: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+{
+    pub fn new(budget: usize, file_manager: U, task:&str) -> LRUBuffer<'a, T, U> {
+        let model_dir = format!("../lossyML/model/cbf_{}.model", task);
+        println!("created LRU comp buffer with budget {} bytes with model: {}", budget, model_dir);
+        let model : Box<PredictorVec<T>> = match task {
+            "kmeans" => {
+                /* Construct the kmeans model	 */
+                let ml_content = fs::read_to_string(model_dir).expect("Unable to read kmeans file");
+                let deserialized_model: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+                Box::new(deserialized_model )
+            },
+
+            "dtree" => {
+                /* Construct the dtree model	 */
+                let ml_content = fs::read_to_string(model_dir).expect("Unable to read dtree file");
+                let deserialized_model: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+                Box::new(deserialized_model )
+            },
+            "knn" => {
+                /* Construct the knn model	 */
+                let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+                let deserialized_model: KNNClassifier<T, Euclidian> = serde_json::from_str(&ml_content).unwrap();
+                Box::new(deserialized_model )
+            },
+            "rforest" => {
+                let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+                let deserialized_model: RandomForestClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+                Box::new(deserialized_model )
+            },
+            // "nb" => {
+            //     let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+            //     let deserialized_model: GaussianNB<T, DenseMatrix<T> > = serde_json::from_str(&ml_content).unwrap();
+            //     Box::new(deserialized_model )
+            // },
+            _ => panic!(format!("{} is not supported yet|", task)),
+        };
+
 
         LRUBuffer {
             budget: budget,
@@ -926,7 +839,7 @@ impl<T, U> LRUBuffer<T, U>
             done: false,
             rlabel: BTreeMap::new(),
             plabel: BTreeMap::new(),
-            predictor: Some(deserialized_kmeans),
+            predictor: model,
             mab_250: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
             mab_125: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
             mab_000: EGreedy::new(4, 0.1, 0.0, UpdateType::Average)
@@ -1224,7 +1137,8 @@ impl<T, U> LRUBuffer<T, U>
             let vec = Get_Decomp(&seg);
             if !self.rlabel.contains_key(&key){
                 // println!("vec size {}", size);
-                let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+                // let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+                let label = self.predictor.predictVec(&vec,entry_size/1000);
                 self.rlabel.insert(key, label.clone());
                 self.plabel.insert(key, label);
             }
@@ -1235,7 +1149,8 @@ impl<T, U> LRUBuffer<T, U>
         else {
             let vec = Get_Decomp(&seg);
             // println!("vec size {}", size);
-            let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+            // let label = self.predictor.as_ref().unwrap().predictVec(&vec,entry_size/1000);
+            let label = self.predictor.predictVec(&vec,entry_size/1000);
             // println!("plabel {:?}", &label);
             // println!("rlabel {:?}", self.rlabel.get(&key).unwrap());
             let acc =  1.0 - Err_Eval(&label, self.rlabel.get(&key).unwrap()) as f64/ label.len() as f64;
@@ -1285,3 +1200,126 @@ impl<T, U> LRUBuffer<T, U>
         }
     }
 }
+
+
+
+impl<'a, T, U> SegmentBuffer<T> for LRUBuffer<'a, T, U>
+    where T: Copy + Send + Serialize + DeserializeOwned + Debug + Num +FFTnum+ FromPrimitive + PartialOrd + Into<f64> + Signed + Display+ RealNumber,
+          U: FileManager<Vec<u8>, DBVector> + Sync + Send
+{
+    fn get(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>, BufErr> {
+        if self.retrieve(key)? {
+            match self.buffer.get(&key) {
+                Some(seg) => Ok(Some(&seg.value)),
+                None => Err(BufErr::GetFail),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn get_mut(&mut self, key: SegmentKey) -> Result<Option<&Segment<T>>, BufErr> {
+        if self.retrieve(key)? {
+            match self.buffer.get_mut(&key) {
+                Some(seg) => Ok(Some(&seg.value)),
+                None => Err(BufErr::GetMutFail),
+            }
+        } else {
+            Ok(None)
+        }
+    }
+
+
+    fn is_done(&self) -> bool {
+        self.done
+    }
+
+    fn run_query(&self) {
+        self.evaluate_query();
+    }
+
+    #[inline]
+    fn put(&mut self, seg: Segment<T>) -> Result<(), BufErr> {
+        let seg_key = seg.get_key();
+        self.put_with_key(seg_key, seg)
+    }
+
+
+    fn drain(&mut self) -> Drain<Segment<T>> {
+        unimplemented!()
+    }
+
+    fn copy(&self) -> Vec<Segment<T>> {
+        self.buffer.values().map(|x| x.value.clone()).collect()
+    }
+
+    /* Write to file system */
+    fn persist(&self) -> Result<(), BufErr> {
+        for (seg_key, seg) in self.buffer.iter() {
+            let seg_key_bytes = match seg_key.convert_to_bytes() {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(BufErr::FailedSegKeySer),
+            };
+            let seg_bytes = match seg.value.convert_to_bytes() {
+                Ok(bytes) => bytes,
+                Err(_) => return Err(BufErr::FailedSegSer),
+            };
+
+            match self.file_manager.fm_write(seg_key_bytes, seg_bytes) {
+                Err(_) => return Err(BufErr::FileManagerErr),
+                _ => (),
+            }
+        }
+
+        Ok(())
+    }
+
+    fn flush(&mut self) {
+        self.buffer.clear();
+        self.done = true;
+    }
+
+
+    fn exceed_threshold(&self, threshold: f32) -> bool {
+        // println!("{}%full, threshold:{}",(self.cur_size as f32 / self.budget as f32 as f32), threshold);
+        return (self.cur_size as f32 / self.budget as f32) >= threshold;
+    }
+
+    fn get_buffer_size(&self) -> usize {
+        self.cur_size
+    }
+
+
+    fn remove_segment(&mut self) -> Result<Segment<T>, BufErr> {
+        match self.head {
+            None => {
+                return Err(BufErr::BufEmpty);
+            }
+            Some(head) => {
+                match self.get(head) {
+                    Some(v) => {
+                        return Ok(v);
+                    }
+                    None => {
+                        return Err(BufErr::GetFail);
+                    }
+                }
+            }
+        }
+    }
+
+    fn idle_threshold(&self, threshold: f32) -> bool {
+        //println!("{}full, threshold:{}",(self.buffer.len() as f32 / self.buf_size as f32), threshold);
+        return (self.cur_size as f32 / self.budget as f32) < threshold;
+    }
+
+    fn exceed_batch(&self, batchsize: usize) -> bool {
+        return self.buffer.len() >= batchsize;
+    }
+
+    fn get_recommend(&self) -> (usize,usize,usize){
+        return self.get_recommend();
+    }
+}
+
+

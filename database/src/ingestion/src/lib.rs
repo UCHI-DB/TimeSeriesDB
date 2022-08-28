@@ -60,7 +60,7 @@ use time_series_start::recoding_daemon::RecodingDaemon;
 const DEFAULT_BUF_SIZE: usize = 150;
 const DEFAULT_DELIM: char = '\n';
 
-pub fn run_single_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, num_recode: i32){
+pub fn run_single_test(config_file: &str, task:&str, comp:&str, recode:&str, num_comp:i32, num_recode: i32){
 
 	let config = match Loader::from_file(Path::new(config_file)) {
 		Ok(config) => config,
@@ -167,7 +167,7 @@ pub fn run_single_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, 
 					let buf_type = config.lookup("type").expect("A buffer type must be provided");
 					match buf_type.as_str().expect("Buffer type must be provided as string") {
 						"Clock" => Some(Box::new(Arc::new(Mutex::new(ClockBuffer::<f64,rocksdb::DB>::new(buffer_size,*fm))))),
-						"LRU" => Some(Box::new(Arc::new(Mutex::new(LRUBuffer::<f64,rocksdb::DB>::new(buffer_budget,*fm))))),
+						"LRU" => Some(Box::new(Arc::new(Mutex::new(LRUBuffer::<f64,rocksdb::DB>::new(buffer_budget,*fm, task))))),
 						x => panic!("The buffer type, {:?}, is not currently supported to run with a file manager", x),
 					}
 				}
@@ -539,7 +539,7 @@ pub fn run_single_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, 
 
 }
 
-pub fn run_mab_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, num_recode: i32){
+pub fn run_mab_test(config_file: &str, task:&str, comp:&str, recode:&str, num_comp:i32, num_recode: i32){
 
 	let config = match Loader::from_file(Path::new(config_file)) {
 		Ok(config) => config,
@@ -646,7 +646,7 @@ pub fn run_mab_test(config_file: &str, comp:&str, recode:&str, num_comp:i32, num
 					let buf_type = config.lookup("type").expect("A buffer type must be provided");
 					match buf_type.as_str().expect("Buffer type must be provided as string") {
 						"Clock" => Some(Box::new(Arc::new(Mutex::new(ClockBuffer::<f64,rocksdb::DB>::new(buffer_size,*fm))))),
-						"LRU" => Some(Box::new(Arc::new(Mutex::new(LRUBuffer::<f64,rocksdb::DB>::new(buffer_budget,*fm))))),
+						"LRU" => Some(Box::new(Arc::new(Mutex::new(LRUBuffer::<f64,rocksdb::DB>::new(buffer_budget,*fm,task))))),
 						x => panic!("The buffer type, {:?}, is not currently supported to run with a file manager", x),
 					}
 				}
