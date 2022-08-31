@@ -101,7 +101,7 @@ impl<T,U,F> CompressionDaemon<T,U,F>
 					}
 				}
 				println!("buffer total bytes: {},{}",SystemTime::now().duration_since(UNIX_EPOCH)
-					.unwrap().as_micros() as f64/1000000.0,buf.get_buffer_size());
+					.unwrap().as_micros() as f64/1000000.0, buf.get_buffer_size());
 				return Ok(());
 			}
 			Err(_) => Err(BufErr::CantGrabMutex),

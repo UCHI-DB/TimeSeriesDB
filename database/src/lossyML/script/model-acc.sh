@@ -18,13 +18,13 @@ nohup bash script/kmeans-UCR.sh kmeans buff 3 > nohup1.out &
 nohup bash script/kmeans-UCR.sh kmeans paa 3 > nohup2.out &
 nohup bash script/kmeans-UCR.sh kmeans fft 3 > nohup3.out
 
-nohup bash script/kmeans-UCR.sh nb pla 3 > nohup1.out &
-nohup bash script/kmeans-UCR.sh nb buff 3 > nohup1.out &
-nohup bash script/kmeans-UCR.sh nb paa 3 > nohup2.out &
-nohup bash script/kmeans-UCR.sh nb fft 3 > nohup3.out
-
-nohup bash script/kmeans-UCR.sh dbscan pla 3 > nohup1.out &
-nohup bash script/kmeans-UCR.sh dbscan buff 3 > nohup1.out &
-nohup bash script/kmeans-UCR.sh dbscan paa 3 > nohup2.out &
-nohup bash script/kmeans-UCR.sh dbscan fft 3 > nohup3.out
+#nohup bash script/kmeans-UCR.sh nb pla 3 > nohup1.out &
+#nohup bash script/kmeans-UCR.sh nb buff 3 > nohup1.out &
+#nohup bash script/kmeans-UCR.sh nb paa 3 > nohup2.out &
+#nohup bash script/kmeans-UCR.sh nb fft 3 > nohup3.out
+#
+#nohup bash script/kmeans-UCR.sh dbscan pla 3 > nohup1.out &
+#nohup bash script/kmeans-UCR.sh dbscan buff 3 > nohup1.out &
+#nohup bash script/kmeans-UCR.sh dbscan paa 3 > nohup2.out &
+#nohup bash script/kmeans-UCR.sh dbscan fft 3 > nohup3.out
 

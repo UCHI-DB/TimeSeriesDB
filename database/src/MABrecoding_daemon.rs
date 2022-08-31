@@ -44,6 +44,7 @@ pub struct MABRecodingDaemon<T,U>
 	processed: usize,
 	batch: usize,
 	lossy: Methods,
+	tcr: f64,
 	bestarms: (usize,usize,usize)
 }
 
@@ -70,8 +71,14 @@ impl<T,U> MABRecodingDaemon<T,U>
 			processed: 0,
 			batch: batch,
 			lossy: lossy,
+			tcr : 0.0,
 			bestarms: (0, 0, 0)
 		}
+	}
+
+	pub fn set_targetCR(&mut self, tcr: f64){
+		println!("set target compression ratio: {}", tcr);
+		self.tcr = tcr;
 	}
 
 	fn get_seg_from_uncomp_buf(&mut self) -> Result<Vec<Segment<T>>,BufErr>

@@ -85,6 +85,7 @@ impl fmt::Display for Methods {
             Methods::Bufflossy (scale, bits) => write!(f,"{}", format!("BUFF w/ scale {:?}, bits {:?}", scale, bits)),
             Methods::Paa (ws) => write!(f,"{}", format!("Paa w/ window size {:?}", ws)),
             Methods::Rrd_sample => write!(f,"{}", format!("Round robin data management")),
+            Methods::Uncompr => write!(f,"{}", format!("No compression applied")),
             Methods::Kernel (id) => write!(f, "{}", format!("Kernel w/ DictionaryId {:?}", id)),
             Methods::SparseLearning (id) => write!(f, "{}", format!("Sparse Learning w/ DictionaryId {:?}", id)),
             Methods::DeepLearning (file) => write!(f, "{}", format!("Deep Learning w/ file {:?}", file)),

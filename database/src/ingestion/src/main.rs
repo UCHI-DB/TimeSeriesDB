@@ -1,4 +1,4 @@
-use ingestion::{run_mab_test, run_single_test};
+use ingestion::{run_mab_test, run_online_mab_test, run_online_test, run_single_test};
 use std::env;
 
 
@@ -11,14 +11,26 @@ fn main() {
 	let recode = &args[4];
 	let num_comp = args[5].parse::<i32>().ok().expect("I wasn't given an integer for encoding number!");
 	let num_recode = args[6].parse::<i32>().ok().expect("I wasn't given an integer recoding number!");
-	let mab = args[7].parse::<bool>().ok().expect("I wasn't given an boolean!");
+	let mode = &args[7];
+	let tcr = args[8].parse::<f64>().ok().expect("I wasn't given an f64!");
 
-	if mab{
-		run_mab_test(config_file,task, comp, recode,num_comp, num_recode);
+	match mode.as_str(){
+		"maboffline" => {
+			run_mab_test(config_file,task, comp, recode,num_comp, num_recode);
+		}
+		"offline" => {
+			run_single_test(config_file, task,comp, recode,num_comp, num_recode)
+		}
+		"mabonline" => {
+			run_online_mab_test(config_file, task,comp, recode,num_comp, num_recode, tcr);
+		}
+		"online" => {
+			run_online_test(config_file, task,comp, recode,num_comp, num_recode, tcr);
+		}
+
+		_ => {panic!("mode not supported yet!")}
 	}
-	else{
-		run_single_test(config_file, task,comp, recode,num_comp, num_recode)
-	}
+
 
     
 }

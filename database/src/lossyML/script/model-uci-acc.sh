@@ -18,13 +18,13 @@ nohup bash script/kmeans-UCI.sh kmeans buff 3 > nohup1.out &
 nohup bash script/kmeans-UCI.sh kmeans paa 3 > nohup2.out &
 nohup bash script/kmeans-UCI.sh kmeans fft 3 > nohup3.out
 
-nohup bash script/kmeans-UCI.sh nb pla 3 > nohup1.out &
-nohup bash script/kmeans-UCI.sh nb buff 3 > nohup1.out &
-nohup bash script/kmeans-UCI.sh nb paa 3 > nohup2.out &
-nohup bash script/kmeans-UCI.sh nb fft 3 > nohup3.out
-
-nohup bash script/kmeans-UCI.sh dbscan pla 3 > nohup1.out &
-nohup bash script/kmeans-UCI.sh dbscan buff 3 > nohup1.out &
-nohup bash script/kmeans-UCI.sh dbscan paa 3 > nohup2.out &
-nohup bash script/kmeans-UCI.sh dbscan fft 3 > nohup3.out
+#nohup bash script/kmeans-UCI.sh nb pla 3 > nohup1.out &
+#nohup bash script/kmeans-UCI.sh nb buff 3 > nohup1.out &
+#nohup bash script/kmeans-UCI.sh nb paa 3 > nohup2.out &
+#nohup bash script/kmeans-UCI.sh nb fft 3 > nohup3.out
+#
+#nohup bash script/kmeans-UCI.sh dbscan pla 3 > nohup1.out &
+#nohup bash script/kmeans-UCI.sh dbscan buff 3 > nohup1.out &
+#nohup bash script/kmeans-UCI.sh dbscan paa 3 > nohup2.out &
+#nohup bash script/kmeans-UCI.sh dbscan fft 3 > nohup3.out
 

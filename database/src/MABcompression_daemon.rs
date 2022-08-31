@@ -51,7 +51,7 @@ impl<T,U,F> MABCompressionDaemon<T,U,F>
 			uncomp_threshold: uncomp_threshold,
 			processed: 0,
 			compress_method: compress_method,
-			mab: EGreedy::new(5, 0.05, 0.0, UpdateType::Average)
+			mab: EGreedy::new(5, 0.1, 0.0, UpdateType::Average)
 		}
 	}
 
@@ -122,6 +122,7 @@ impl<T,U,F> MABCompressionDaemon<T,U,F>
 	pub fn update_mab(&mut self, segs: &Vec<Segment<T>>, arm: usize){
 		for seg in segs{
 			// hardcode the original file size as 80000 bytes
+			println!("compression 1/ratio:{}",80000.0/seg.get_byte_size().unwrap() as f64);
 			self.mab.update(arm, 80000.0/seg.get_byte_size().unwrap() as f64);
 		}
 	}
@@ -155,15 +156,15 @@ impl<T,U,F> MABCompressionDaemon<T,U,F>
 							let batch = self.compress_method.get_batch();
 							println!("MAB best arm: {}", action);
 							match action {
-								0 => { let ccomp = GorillaCompress::new(10, batch);
-									ccomp.run_compress(&mut segs); },
-								1 => { let ccomp = GZipCompress::new(10, batch);
+								0 => { let ccomp = SplitBDDoubleCompress::new(10, batch, 10000);
 									ccomp.run_compress(&mut segs);},
+								1 => { let ccomp = SprintzDoubleCompress::new(10, batch, 10000);
+									ccomp.run_compress(&mut segs); },
 								2 => { let ccomp =  SnappyCompress::new(10, batch);
 									ccomp.run_compress(&mut segs);},
-								3 => { let ccomp = SprintzDoubleCompress::new(10, batch, 10000);
+								3 => { let ccomp = GorillaCompress::new(10, batch);
 									ccomp.run_compress(&mut segs);},
-								4 => { let ccomp = SplitBDDoubleCompress::new(10, batch, 10000);
+								4 => { let ccomp = GZipCompress::new(10, batch);
 									ccomp.run_compress(&mut segs);},
 								_ => panic!("Compression index greater than 4 is not supported yet."),
 							}

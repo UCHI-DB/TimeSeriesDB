@@ -12,7 +12,7 @@ for file in $(ls ../../../UCI121);
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ${method}_${lossy}_log.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ./data/UCI-model-acc08/${method}_${lossy}_log.csv
 		      done
 	    done
     elif [ "$lossy" == "paa" ]; then
@@ -20,7 +20,7 @@ for file in $(ls ../../../UCI121);
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ${method}_${lossy}_log.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ./data/UCI-model-acc08/${method}_${lossy}_log.csv
 		      done
 	    done
 	  elif [ "$lossy" == "fft" ]; then
@@ -28,7 +28,7 @@ for file in $(ls ../../../UCI121);
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ${method}_${lossy}_log.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ./data/UCI-model-acc08/${method}_${lossy}_log.csv
 		      done
 	    done
 	  elif [ "$lossy" == "pla" ]; then
@@ -36,7 +36,7 @@ for file in $(ls ../../../UCI121);
     		  do
     		    for i in $(seq 1 $TIME);
     		      do
-    		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ${method}_${lossy}_log.csv
+    		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ./data/UCI-model-acc08/${method}_${lossy}_log.csv
     		      done
     	    done
 	  elif [ "$lossy" == "buff" ]; then
@@ -44,7 +44,7 @@ for file in $(ls ../../../UCI121);
 		  do
 		    for i in $(seq 1 $TIME);
 		      do
-		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ${method}_${lossy}_log.csv
+		        cargo +nightly run --release --package lossyML --bin lossyML $method ../../../UCI121/${file}/${file}_TRAIN.csv $lossy $prec >> ./data/UCI-model-acc08/${method}_${lossy}_log.csv
 		      done
 	    done
     fi
@@ -55,6 +55,6 @@ for file in $(ls ../../../UCI121);
 	done
 echo "all done to ${method}_${lossy}_log.csv"
 
-python3 ../../../database/src/lossyML/script/kmeans_logparser.py ${method}_${lossy}_log.csv UCI-${method}_${lossy}.csv $TIME
+python3 ../../../database/src/lossyML/script/kmeans_logparser.py ./data/UCI-model-acc08/${method}_${lossy}_log.csv ./data/UCI-model-acc08/UCI-${method}_${lossy}.csv $TIME
 
 			
