@@ -731,6 +731,7 @@ pub struct LRUBuffer<'a, T, U>
     rlabel: BTreeMap<SegmentKey, Vec<T>>,
     plabel: BTreeMap<SegmentKey, Vec<T>>,
     predictor: Box<PredictorVec<T>+'a>,
+    task: usize,
     // predictor: Option<KMeans<T>,
     mab_250: EGreedy,
     mab_125: EGreedy,
@@ -790,60 +791,140 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
 
 {
     pub fn new(budget: usize, file_manager: U, task:&str) -> LRUBuffer<'a, T, U> {
-        let model_dir = format!("../lossyML/model/cbf_{}.model", task);
+        let mut model_dir = format!("../lossyML/model/cbf_{}.model", task);
+        let kmeans_dir = format!("../lossyML/model/cbf_kmeans.model");
         println!("created LRU comp buffer with budget {} bytes with model: {}", budget, model_dir);
-        let model : Box<PredictorVec<T>> = match task {
-            "kmeans" => {
-                /* Construct the kmeans model	 */
-                let ml_content = fs::read_to_string(model_dir).expect("Unable to read kmeans file");
-                let deserialized_model: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
-                Box::new(deserialized_model )
-            },
+        let mut taskid : usize = 0; // 0 means ML task, 1 for max, 2 for sum, 3 for max_ML, 4 for sum_ML.
 
-            "dtree" => {
-                /* Construct the dtree model	 */
-                let ml_content = fs::read_to_string(model_dir).expect("Unable to read dtree file");
-                let deserialized_model: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
-                Box::new(deserialized_model )
-            },
-            "knn" => {
-                /* Construct the knn model	 */
-                let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
-                let deserialized_model: KNNClassifier<T, Euclidian> = serde_json::from_str(&ml_content).unwrap();
-                Box::new(deserialized_model )
-            },
-            "rforest" => {
-                let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
-                let deserialized_model: RandomForestClassifier<T> = serde_json::from_str(&ml_content).unwrap();
-                Box::new(deserialized_model )
-            },
-            // "nb" => {
-            //     let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
-            //     let deserialized_model: GaussianNB<T, DenseMatrix<T> > = serde_json::from_str(&ml_content).unwrap();
-            //     Box::new(deserialized_model )
-            // },
-            _ => panic!(format!("{} is not supported yet|", task)),
-        };
+        let  task_vec = task.split('_').collect::<Vec<&str>>();
 
+        if task_vec.len()==1{
+            let model : Box<PredictorVec<T>> = match task_vec[0] {
+                "kmeans" => {
+                    /* Construct the kmeans model	 */
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read kmeans file");
+                    let deserialized_model: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
 
-        LRUBuffer {
-            budget: budget,
-            cur_size: 0,
-            head: None,
-            tail: None,
-            buffer: BTreeMap::new(),
-            agg_stats: BTreeMap::new(),
-            est_agg_stats: BTreeMap::new(),
-            file_manager: file_manager,
-            buf_size: 0,
-            done: false,
-            rlabel: BTreeMap::new(),
-            plabel: BTreeMap::new(),
-            predictor: model,
-            mab_250: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
-            mab_125: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
-            mab_000: EGreedy::new(4, 0.1, 0.0, UpdateType::Average)
+                "dtree" => {
+                    /* Construct the dtree model	 */
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read dtree file");
+                    let deserialized_model: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
+                "knn" => {
+                    /* Construct the knn model	 */
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+                    let deserialized_model: KNNClassifier<T, Euclidian> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
+                "rforest" => {
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+                    let deserialized_model: RandomForestClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
+                // we use kmeans model as dummy ml task for aggregation workload
+                "max" => {
+                    /* Construct the kmeans model	 */
+                    let ml_content = fs::read_to_string(kmeans_dir).expect("Unable to read kmeans file for max workload");
+                    let deserialized_model: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+                    taskid = 1;
+                    Box::new(deserialized_model )
+                },
+                "sum" => {
+                    /* Construct the kmeans model	 */
+                    let ml_content = fs::read_to_string(kmeans_dir).expect("Unable to read kmeans file for sum workload");
+                    let deserialized_model: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+                    taskid = 2;
+                    Box::new(deserialized_model )
+                },
+                // "nb" => {
+                //     let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+                //     let deserialized_model: GaussianNB<T, DenseMatrix<T> > = serde_json::from_str(&ml_content).unwrap();
+                //     Box::new(deserialized_model )
+                // },
+                _ => panic!(format!("{} is not supported yet|", task)),
+            };
+            println!("task: {}, task id: {}", task, taskid);
+            LRUBuffer {
+                budget: budget,
+                cur_size: 0,
+                head: None,
+                tail: None,
+                buffer: BTreeMap::new(),
+                agg_stats: BTreeMap::new(),
+                est_agg_stats: BTreeMap::new(),
+                file_manager: file_manager,
+                buf_size: 0,
+                done: false,
+                rlabel: BTreeMap::new(),
+                plabel: BTreeMap::new(),
+                predictor: model,
+                task: taskid,
+                mab_250: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
+                mab_125: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
+                mab_000: EGreedy::new(4, 0.1, 0.0, UpdateType::Average)
+            }
         }
+        else{
+            model_dir = format!("../lossyML/model/cbf_{}.model", task_vec[1]);
+            let model : Box<PredictorVec<T>> = match task_vec[1] {
+                "kmeans" => {
+                    /* Construct the kmeans model	 */
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read kmeans file");
+                    let deserialized_model: KMeans<T> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
+
+                "dtree" => {
+                    /* Construct the dtree model	 */
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read dtree file");
+                    let deserialized_model: DecisionTreeClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
+                "knn" => {
+                    /* Construct the knn model	 */
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+                    let deserialized_model: KNNClassifier<T, Euclidian> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
+                "rforest" => {
+                    let ml_content = fs::read_to_string(model_dir).expect("Unable to read knn file");
+                    let deserialized_model: RandomForestClassifier<T> = serde_json::from_str(&ml_content).unwrap();
+                    Box::new(deserialized_model )
+                },
+                _ => panic!(format!("{} is not supported yet|", task)),
+            };
+
+            if task_vec[0]=="max"{
+                taskid = 3;
+            }
+            else if task_vec[0]=="sum"{
+                taskid = 4;
+            }
+            println!("task: {}, {}-{} task id: {}", task, task_vec[0],task_vec[1], taskid);
+            LRUBuffer {
+                budget: budget,
+                cur_size: 0,
+                head: None,
+                tail: None,
+                buffer: BTreeMap::new(),
+                agg_stats: BTreeMap::new(),
+                est_agg_stats: BTreeMap::new(),
+                file_manager: file_manager,
+                buf_size: 0,
+                done: false,
+                rlabel: BTreeMap::new(),
+                plabel: BTreeMap::new(),
+                predictor: model,
+                task: taskid,
+                mab_250: EGreedy::new(4, 0.05, 15.0, UpdateType::Average),
+                mab_125: EGreedy::new(4, 0.05, 15.0, UpdateType::Average),
+                mab_000: EGreedy::new(4, 0.05, 15.0, UpdateType::Average)
+            }
+        }
+
     }
 
     fn evaluate_query(&self) {
@@ -853,6 +934,9 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         let mut firstNerr = 0;
         let mut lastNerr = 0;
         let mut totalErr = 0;
+        let mut maxErr = 0.0;
+        let mut sumErr = 0.0;
+        let nSeg = self.buffer.len();
         let mut estlatestn: AggStats<T> = AggStats {
             max: (T::one()),
             min: (T::one()),
@@ -908,6 +992,12 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         cnt = 0;
         for (k, v) in self.est_agg_stats.iter().rev() {
             let agg = v;
+
+            if cnt<(nSeg-n){
+                let real_agg = self.agg_stats.get(k).unwrap();
+                maxErr += num::abs(agg.max.into()-real_agg.max.into())/num::abs(real_agg.max.into());
+                sumErr += num::abs(agg.sum.into()-real_agg.sum.into())/num::abs(real_agg.sum.into());
+            }
             let plabels = self.plabel.get(k).unwrap();
             let cur_err = Err_Eval(plabels, self.rlabel.get(k).unwrap());
             if (cnt<n){
@@ -929,6 +1019,8 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
 
             cnt += 1;
         }
+        maxErr = maxErr/(nSeg-n) as f64;
+        sumErr = sumErr/(nSeg-n) as f64;
 
         // calculate the earliest N
         cnt = 0;
@@ -965,22 +1057,25 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
             }
             cnt += 1;
         }
-        let total_label = vector_per_seg*self.buffer.len();
+        let total_label = vector_per_seg*nSeg;
 
-        println!("true earliest max: {}, est max: {}",earliestn.max , estearliestn.max);
-        println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
-        println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
-        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,
+
+
+        // println!("true earliest max: {}, est max: {}",earliestn.max , estearliestn.max);
+        // println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
+        // println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
+        // println!("Aggregation stats (earlies-latest-untilnow): {},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,
+        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{:.4},{:.4},{:.4}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,
                  num::abs((earliestn.max - estearliestn.max) / earliestn.max), num::abs((earliestn.min - estearliestn.min) / earliestn.min),
                  num::abs((earliestn.sum - estearliestn.sum) / earliestn.sum),
                  num::abs((latestn.max - estlatestn.max) / latestn.max), num::abs((latestn.min - estlatestn.min) / latestn.min),
                  num::abs((latestn.sum - estlatestn.sum) / latestn.sum), num::abs((untilnow.max - estuntilnow.max) / untilnow.max),
-                 num::abs((untilnow.min - estuntilnow.min) / untilnow.min), num::abs((untilnow.sum - estuntilnow.sum) / untilnow.sum),
+                 num::abs((untilnow.min - estuntilnow.min) / untilnow.min), num::abs((untilnow.sum - estuntilnow.sum) / untilnow.sum),maxErr,sumErr,
                  firstNerr as f64 /labels_of_N as f64, lastNerr as f64 /labels_of_N as f64, totalErr as f64 / total_label as f64
         )
     }
 
-    fn update_mab(&mut self, m: &Methods, acc: f64){
+    fn update_ml_mab(&mut self, m: &Methods, acc: f64){
         let mut ratio = 0.0;
         let c = 1.0;
         match m {
@@ -1034,7 +1129,141 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                     self.mab_000.update(3, acc/(c+ratio));
                 }
             }
-            _ => {panic!("lossy compression is not supported by LRU");}
+            _ => {panic!("lossy compression is not supported by LRU ML query");}
+        }
+        println!("agg_ML reward: {}", acc/(c+ratio));
+    }
+
+    fn update_agg_ml_mab(&mut self, m: &Methods, aggacc: f64, mlacc: f64){
+        let r = 0.3;
+        let mut agg = 0.0;
+        if aggacc==0.0{
+            agg = 20.0
+        }
+        else{
+            agg = -aggacc.log10();
+        }
+
+        let mut ratio = 0.0;
+        let c = 1.0;
+        match m {
+            Methods::Bufflossy(_,bits) => {
+                // only for bits >= 8, fall back to rrd otherwise
+                ratio = (*bits) as f64/64.0;
+                if ratio>=0.25 {
+                    self.mab_250.update(0, 10.0*mlacc + r*agg);
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(0, 10.0*mlacc + r*agg);
+                }
+            }
+            Methods::Rrd_sample => {
+                // only for 1 sample, so no value for mab125 and mab 250.
+                ratio = 1.0/10000.0;
+                self.mab_000.update(0, 10.0*mlacc + r*agg);
+            }
+            Methods::Paa(wsize) => {
+                ratio = 1.0/(*wsize) as f64;
+                if ratio>=0.25 {
+                    self.mab_250.update(1, 10.0*mlacc + r*agg);
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(1, 10.0*mlacc + r*agg);
+                }
+                else{
+                    self.mab_000.update(1, 10.0*mlacc + r*agg);
+                }
+            }
+            Methods::Fourier(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(2, 10.0*mlacc + r*agg);
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(2, 10.0*mlacc + r*agg);
+                }
+                else{
+                    self.mab_000.update(2, 10.0*mlacc + r*agg);
+                }
+
+            }
+            Methods::Pla(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(3, 10.0*mlacc + r*agg);
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(3, 10.0*mlacc + r*agg);
+                }
+                else{
+                    self.mab_000.update(3, 10.0*mlacc + r*agg);
+                }
+            }
+            _ => {panic!("lossy compression is not supported by LRU ML query");}
+        }
+        println!("agg_ML reward: {}", 10.0*mlacc + r*agg);
+
+    }
+
+    fn update_agg_mab(&mut self, m: &Methods, val: f64){
+        let mut reward = 0.0;
+        if val==0.0{
+            reward = 20.0
+        }
+        else{
+            reward = -val.log10();
+        }
+        println!("agg reward: {}", reward);
+
+        match m {
+            Methods::Bufflossy(_,bits) => {
+                // only for bits >= 8, fall back to rrd otherwise
+                let ratio = (*bits) as f64/64.0;
+                if ratio>=0.25 {
+                    self.mab_250.update(0, reward);
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(0, reward);
+                }
+            }
+            Methods::Rrd_sample => {
+                // only for 1 sample, so no value for mab125 and mab 250.
+                self.mab_000.update(0, reward);
+            }
+            Methods::Paa(wsize) => {
+                let ratio = 1.0/(*wsize) as f64;
+                if ratio>=0.25 {
+                    self.mab_250.update(1, reward);
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(1, reward);
+                }
+                else{
+                    self.mab_000.update(1, reward);
+                    // println!("update 000");
+                }
+            }
+            Methods::Fourier(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(2, reward);
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(2, reward);
+                }
+                else{
+                    self.mab_000.update(2, reward);
+                }
+            }
+            Methods::Pla(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(3, reward);
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(3, reward);
+                }
+                else{
+                    self.mab_000.update(3, reward);
+                }
+            }
+            _ => {panic!("lossy compression is not supported by LRU agg query");}
         }
 
     }
@@ -1155,8 +1384,33 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
             // println!("rlabel {:?}", self.rlabel.get(&key).unwrap());
             let acc =  1.0 - Err_Eval(&label, self.rlabel.get(&key).unwrap()) as f64/ label.len() as f64;
             self.plabel.insert(key, label);
-            self.est_agg_stats.insert(key, Get_AggStatsFromVec(&vec));
-            self.update_mab(seg.get_method().as_ref().unwrap(),acc);
+            let estaggstats = Get_AggStatsFromVec(&vec);
+            let estmax = estaggstats.max.into();
+            let estsum = estaggstats.sum.into();
+            self.est_agg_stats.insert(key, estaggstats);
+            if self.task==0{
+                self.update_ml_mab(seg.get_method().as_ref().unwrap(),acc);
+            }
+            else if self.task==1 {
+                let agg = self.agg_stats.get(&key).unwrap();
+                let max= agg.max.into();
+                self.update_agg_mab(seg.get_method().as_ref().unwrap(),num::abs((max - estmax) / max));
+            }
+            else if self.task==2 {
+                let agg = self.agg_stats.get(&key).unwrap();
+                let sum = agg.sum.into();
+                self.update_agg_mab(seg.get_method().as_ref().unwrap(),num::abs((sum - estsum) / sum));
+            }
+            else if self.task==3 {
+                let agg = self.agg_stats.get(&key).unwrap();
+                let max= agg.max.into();
+                self.update_agg_ml_mab(seg.get_method().as_ref().unwrap(),num::abs((max - estmax) / max),acc);
+            }
+            else if self.task==4 {
+                let agg = self.agg_stats.get(&key).unwrap();
+                let sum = agg.sum.into();
+                self.update_agg_ml_mab(seg.get_method().as_ref().unwrap(),num::abs((sum - estsum) / sum),acc);
+            }
         }
 
         match self.get(key) {

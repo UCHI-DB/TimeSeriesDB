@@ -94,6 +94,13 @@ impl<T,U> MABRecodingDaemon<T,U>
 							Ok(seg) => {
 								segs.push(seg);
 								if segs.len() == self.batch {
+									if self.tcr!=0.0{
+										let mut rng = rand::thread_rng();
+										let n = rng.gen_range(0, 8);
+										if n==1{
+											buf.run_query();
+										}
+									}
 									break;
 								}
 							},
@@ -106,7 +113,7 @@ impl<T,U> MABRecodingDaemon<T,U>
 				} else {
 					// add random number check to avoid frequent query check
 					let mut rng = rand::thread_rng();
-					let n = rng.gen_range(0, 2);
+					let n = rng.gen_range(0, 4);
 					if n==1{
 						buf.run_query();
 					}
@@ -120,6 +127,69 @@ impl<T,U> MABRecodingDaemon<T,U>
 
 	fn is_done_buf(&self) -> bool{
 		self.seg_buf.lock().unwrap().is_done()
+	}
+
+	fn lossy_comp_with_tcr (&self, uncomp_seg: &mut Segment<T>) {
+		let mut choice = 0;
+		if self.tcr>=0.25{
+			choice = self.bestarms.0;
+		}else if self.tcr>=0.125{
+			choice = self.bestarms.1;
+		}else {
+			choice = self.bestarms.2;
+		}
+		match choice {
+			1 => {
+				let ws = (1.0/self.tcr).ceil() as usize;
+				let cur = PAACompress::new(ws, self.batch);
+				cur.run_single_compress(uncomp_seg);
+			}
+			/* RRD is not used by MAB for initial lossy compression. It will be used in the end with extrame tight storage budget*/
+			// Methods::Rrd_sample => {
+			// 	let cur = RRDsample::new(self.batch);
+			// 	cur.run_single_compress(uncomp_seg);
+			// }
+			0 => {
+				// for compression ratio > 0.125, 0 means buff_lossy, else use rrd
+				if self.tcr>=0.125{
+					let mut target_bits = (64.0* self.tcr) as usize/8 * 8;
+					if target_bits<8{
+						target_bits = 8;
+					}
+					let cur = BUFFlossy::new(self.batch,10000, 32);
+					cur.run_single_compress(uncomp_seg);
+					let mut scale = 0;
+					let mut bits = 0;
+					match uncomp_seg.get_method().as_ref().unwrap() {
+						Methods::Bufflossy(s,b) =>{
+							scale = *s;
+							bits = *b;
+						}
+						_ => {panic!("buff stats not match --MABrecoding_daemon")}
+					}
+					if bits as f64/64.0>self.tcr{
+						let recode = BUFFlossy::new(self.batch, scale, bits);
+						recode.buff_recode_remove_bits(uncomp_seg,target_bits);
+					}
+				}
+				else{
+					let ws = (1.0/self.tcr).ceil() as usize;
+					let cur = PAACompress::new(ws, self.batch);
+					cur.run_single_compress(uncomp_seg);
+				}
+
+			}
+			3 => {
+				let cur = PLACompress::new(self.batch,self.tcr);
+				cur.run_single_compress(uncomp_seg);
+			}
+			2 => {
+				let cur = FourierCompress::new(4,self.batch,self.tcr);
+				cur.run_single_compress(uncomp_seg);
+
+			}
+			_ => {}
+		}
 	}
 
 	fn lossy_comp (&self, uncomp_seg: &mut Segment<T>) {
@@ -286,167 +356,231 @@ impl<T,U> MABRecodingDaemon<T,U>
 							}
 						}
 						None => {
-							for seg in &mut segs {
-								// println!("segment key: {:?} with comp time:{}",seg.get_key(),seg.get_comp_times());
-								match seg.get_method().as_ref().unwrap() {
-									Methods::Sprintz (scale) => {
-										let pre = SprintzDoubleCompress::new(10, 20,*scale);
-										pre.run_decompress(seg);
+							if self.tcr!=0.0{
+								let mut cr= 0.0;
+								for seg in &mut segs {
+									cr = seg.get_byte_size().unwrap() as f64/80000.0;
+									// if compression ratio is less than the target, then skip compressing it
+									if cr<=self.tcr{
+										continue;
+									}
 
-										self.lossy_comp(seg);
+									match seg.get_method().as_ref().unwrap() {
+										Methods::Sprintz (scale) => {
+											let pre = SprintzDoubleCompress::new(10, 20,*scale);
+											pre.run_decompress(seg);
 
-									},
-									Methods::Buff(scale)=> {
-										let pre = SplitBDDoubleCompress::new(10,20, *scale);
-										pre.run_decompress(seg);
+											self.lossy_comp_with_tcr(seg);
 
-										self.lossy_comp(seg);
-									},
-									Methods::Snappy=> {
-										let pre = SnappyCompress::new(10,20);
-										pre.run_decompress(seg);
+										},
+										Methods::Buff(scale)=> {
+											let pre = SplitBDDoubleCompress::new(10,20, *scale);
+											pre.run_decompress(seg);
 
-										self.lossy_comp(seg);
-									},
-									Methods::Gzip => {
-										let pre = GZipCompress::new(10,20);
-										pre.run_decompress(seg);
+											self.lossy_comp_with_tcr(seg);
+										},
+										Methods::Snappy=> {
+											let pre = SnappyCompress::new(10,20);
+											pre.run_decompress(seg);
 
-										self.lossy_comp(seg);
-									},
-									Methods::Gorilla => {
-										let pre = GorillaCompress::new(10,20);
-										pre.run_decompress(seg);
+											self.lossy_comp_with_tcr(seg);
+										},
+										Methods::Gzip => {
+											let pre = GZipCompress::new(10,20);
+											pre.run_decompress(seg);
 
-										self.lossy_comp(seg);
-									},
-									Methods::Paa(ws) => {
-										let wsize = ws.clone();
-										if wsize<=4{
-											// 1 corresponds to paa, then direct recoding, otherwise decoding before recoding
-											if self.bestarms.1 == 1{
-												let ws = wsize * 2;
-												let cur = PAACompress::new(2,20);
-												cur.run_single_compress(seg);
-												seg.set_method(Methods::Paa(ws));
+											self.lossy_comp_with_tcr(seg);
+										},
+										Methods::Gorilla => {
+											let pre = GorillaCompress::new(10,20);
+											pre.run_decompress(seg);
+
+											self.lossy_comp_with_tcr(seg);
+										},
+										Methods::Paa(ws) => {
+
+										},
+										Methods::Fourier(rat) => {
+
+										},
+										Methods::Pla(rat) => {
+
+										},
+										Methods::Bufflossy(scale,bits) => {
+
+										},
+										Methods::Rrd_sample => {
+											// do nothing
+										}
+										_ => todo!()
+									}
+									seg.update_comp_times();
+								}
+								println!("{}, {}", cr, self.tcr);
+							}else{
+								for seg in &mut segs {
+									// println!("segment key: {:?} with comp time:{}",seg.get_key(),seg.get_comp_times());
+									match seg.get_method().as_ref().unwrap() {
+										Methods::Sprintz (scale) => {
+											let pre = SprintzDoubleCompress::new(10, 20,*scale);
+											pre.run_decompress(seg);
+
+											self.lossy_comp(seg);
+
+										},
+										Methods::Buff(scale)=> {
+											let pre = SplitBDDoubleCompress::new(10,20, *scale);
+											pre.run_decompress(seg);
+
+											self.lossy_comp(seg);
+										},
+										Methods::Snappy=> {
+											let pre = SnappyCompress::new(10,20);
+											pre.run_decompress(seg);
+
+											self.lossy_comp(seg);
+										},
+										Methods::Gzip => {
+											let pre = GZipCompress::new(10,20);
+											pre.run_decompress(seg);
+
+											self.lossy_comp(seg);
+										},
+										Methods::Gorilla => {
+											let pre = GorillaCompress::new(10,20);
+											pre.run_decompress(seg);
+
+											self.lossy_comp(seg);
+										},
+										Methods::Paa(ws) => {
+											let wsize = ws.clone();
+											if wsize<=4{
+												// 1 corresponds to paa, then direct recoding, otherwise decoding before recoding
+												if self.bestarms.1 == 1{
+													let ws = wsize * 2;
+													let cur = PAACompress::new(2,20);
+													cur.run_single_compress(seg);
+													seg.set_method(Methods::Paa(ws));
+												}
+												else {
+													let cur = PAACompress::new(wsize,20);
+													cur.run_decompress(seg);
+													self.lossy_recode125(seg,1.0/(wsize) as f64);
+												}
+											}
+											else if wsize>=5000{
+												// do nothing, cannot compress anymore
 											}
 											else {
-												let cur = PAACompress::new(wsize,20);
-												cur.run_decompress(seg);
-												self.lossy_recode125(seg,1.0/(wsize) as f64);
+												if self.bestarms.2 == 1{
+													let ws = (wsize) * 2;
+													let cur = PAACompress::new(2,20);
+													cur.run_single_compress(seg);
+													seg.set_method(Methods::Paa(ws));
+												}
+												else {
+													let cur = PAACompress::new(wsize,20);
+													cur.run_decompress(seg);
+													self.lossy_recode000(seg,1.0/(wsize) as f64);
+												}
 											}
-										}
-										else if wsize>=5000{
-											// do nothing, cannot compress anymore
-										}
-										else {
-											if self.bestarms.2 == 1{
-												let ws = (wsize) * 2;
-												let cur = PAACompress::new(2,20);
-												cur.run_single_compress(seg);
-												seg.set_method(Methods::Paa(ws));
+
+
+
+										},
+										Methods::Fourier(rat) => {
+											let ratio = rat.clone();
+											if ratio>=0.25{
+												if self.bestarms.1 == 2{
+													let r = (ratio)/2.0;
+													let cur = FourierCompress::new(2,20, r);
+													cur.fourier_recode_budget_mut(seg, r);
+												}
+												else {
+													let cur = FourierCompress::new(2,20, ratio);
+													cur.run_decompress(seg);
+													self.lossy_recode125(seg, ratio);
+												}
+
+											}
+											else if ratio<=0.004{
+												// do nothing, cannot compress anymore
+											}else {
+												if self.bestarms.2 == 2{
+													let r = ratio/2.0;
+													let cur = FourierCompress::new(2,20, r);
+													cur.fourier_recode_budget_mut(seg, r);
+												}
+												else {
+													let cur = FourierCompress::new(2,20, ratio);
+													cur.run_decompress(seg);
+													self.lossy_recode000(seg,ratio);
+												}
+											}
+
+										},
+										Methods::Pla(rat) => {
+											let ratio = rat.clone();
+											if ratio>=0.25{
+												if self.bestarms.1 == 3{
+													let r = ratio/2.0;
+													let cur = PLACompress::new(20, r);
+													cur.pla_recode_budget_mut(seg, r);
+												}
+												else {
+													let cur = PLACompress::new(20, ratio);
+													cur.run_decompress(seg);
+													self.lossy_recode125(seg, ratio);
+												}
+
+											}
+											else if ratio<=0.004{
+												// do nothing, cannot compress anymore
+											}else {
+												if self.bestarms.2 == 3{
+													let r = ratio/2.0;
+													let cur = PLACompress::new(20, r);
+													cur.pla_recode_budget_mut(seg, r);
+												}
+												else {
+													let cur = PLACompress::new(20, ratio);
+													cur.run_decompress(seg);
+													self.lossy_recode000(seg, ratio);
+												}
+											}
+
+										},
+										Methods::Bufflossy(scale,bits) => {
+											let ratio = (*bits) as f64/64.0;
+											if ratio>=0.25{
+												if self.bestarms.1 == 0{
+													let mut r = bits - 8 - bits%8 ;
+													let cur = BUFFlossy::new(20, *scale, *bits);
+													cur.buff_recode_remove_bits(seg, r);
+												}
+												else {
+													let cur = BUFFlossy::new(20, *scale, *bits);
+													cur.run_decompress(seg);
+													self.lossy_recode125(seg, ratio);
+												}
+
 											}
 											else {
-												let cur = PAACompress::new(wsize,20);
-												cur.run_decompress(seg);
-												self.lossy_recode000(seg,1.0/(wsize) as f64);
-											}
-										}
-
-
-
-									},
-									Methods::Fourier(rat) => {
-										let ratio = rat.clone();
-										if ratio>=0.25{
-											if self.bestarms.1 == 2{
-												let r = (ratio)/2.0;
-												let cur = FourierCompress::new(2,20, r);
-												cur.fourier_recode_budget_mut(seg, r);
-											}
-											else {
-												let cur = FourierCompress::new(2,20, ratio);
-												cur.run_decompress(seg);
-												self.lossy_recode125(seg, ratio);
-											}
-
-										}
-										else if ratio<=0.004{
-											// do nothing, cannot compress anymore
-										}else {
-											if self.bestarms.2 == 2{
-												let r = ratio/2.0;
-												let cur = FourierCompress::new(2,20, r);
-												cur.fourier_recode_budget_mut(seg, r);
-											}
-											else {
-												let cur = FourierCompress::new(2,20, ratio);
-												cur.run_decompress(seg);
-												self.lossy_recode000(seg,ratio);
-											}
-										}
-
-									},
-									Methods::Pla(rat) => {
-										let ratio = rat.clone();
-										if ratio>=0.25{
-											if self.bestarms.1 == 3{
-												let r = ratio/2.0;
-												let cur = PLACompress::new(20, r);
-												cur.pla_recode_budget_mut(seg, r);
-											}
-											else {
-												let cur = PLACompress::new(20, ratio);
-												cur.run_decompress(seg);
-												self.lossy_recode125(seg, ratio);
-											}
-
-										}
-										else if ratio<=0.004{
-											// do nothing, cannot compress anymore
-										}else {
-											if self.bestarms.2 == 3{
-												let r = ratio/2.0;
-												let cur = PLACompress::new(20, r);
-												cur.pla_recode_budget_mut(seg, r);
-											}
-											else {
-												let cur = PLACompress::new(20, ratio);
+												let cur = BUFFlossy::new(20, *scale, *bits);
 												cur.run_decompress(seg);
 												self.lossy_recode000(seg, ratio);
 											}
-										}
 
-									},
-									Methods::Bufflossy(scale,bits) => {
-										let ratio = (*bits) as f64/64.0;
-										if ratio>=0.25{
-											if self.bestarms.1 == 0{
-												let mut r = bits - 8 - bits%8 ;
-												let cur = BUFFlossy::new(20, *scale, *bits);
-												cur.buff_recode_remove_bits(seg, r);
-											}
-											else {
-												let cur = BUFFlossy::new(20, *scale, *bits);
-												cur.run_decompress(seg);
-												self.lossy_recode125(seg, ratio);
-											}
-
+										},
+										Methods::Rrd_sample => {
+											// do nothing
 										}
-										else {
-											let cur = BUFFlossy::new(20, *scale, *bits);
-											cur.run_decompress(seg);
-											self.lossy_recode000(seg, ratio);
-										}
-
-									},
-									Methods::Rrd_sample => {
-										// do nothing
+										_ => todo!()
 									}
-									_ => todo!()
+									seg.update_comp_times();
 								}
-								seg.update_comp_times();
 							}
+
 
 							match self.put_segs_in_comp_buf(segs) {
 								Ok(()) => continue,

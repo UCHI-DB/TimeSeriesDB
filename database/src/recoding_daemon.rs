@@ -110,7 +110,7 @@ impl<T,U> RecodingDaemon<T,U>
 								};
 								if self.tcr!=0.0{
 									let mut rng = rand::thread_rng();
-									let n = rng.gen_range(0, 5);
+									let n = rng.gen_range(0, 8);
 									if n==1{
 										buf.run_query();
 									}
@@ -124,7 +124,7 @@ impl<T,U> RecodingDaemon<T,U>
 				} else {
 					// add random number check to avoid frequent query check
 					let mut rng = rand::thread_rng();
-					let n = rng.gen_range(0, 2);
+					let n = rng.gen_range(0, 4);
 					if n==1{
 						buf.run_query();
 					}
@@ -275,9 +275,9 @@ impl<T,U> RecodingDaemon<T,U>
 						None => {
 							// if tcr == 0, means offline mode, we do progressive recoding.
 							if self.tcr!=0.0{
+								let mut cr= 0.0;
 								for seg in &mut segs {
-									let cr = seg.get_byte_size().unwrap() as f64/80000.0;
-									println!("current cr: {}, tcr:{}", cr, self.tcr);
+									cr = seg.get_byte_size().unwrap() as f64/80000.0;
 									// if compression ratio is less than the target, then skip compressing it
 									if cr<=self.tcr{
 										continue;
@@ -337,7 +337,7 @@ impl<T,U> RecodingDaemon<T,U>
 										seg.update_comp_times();
 									}
 								}
-
+								println!("{}, {}", cr, self.tcr);
 							}
 							else{
 								for seg in &mut segs {

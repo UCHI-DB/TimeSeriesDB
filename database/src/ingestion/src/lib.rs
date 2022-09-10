@@ -1331,7 +1331,7 @@ pub fn run_online_mab_test(config_file: &str, task:&str, comp:&str, recode:&str,
 	}
 
 
-	let batch = 5;
+	let batch = 2;
 
 
 
@@ -1460,7 +1460,7 @@ pub fn run_online_mab_test(config_file: &str, task:&str, comp:&str, recode:&str,
 
 	for _x in 0..num_recode {
 		let rec_name = recoding.clone();
-		let mut rec:MABRecodingDaemon<_,DB> = MABRecodingDaemon::new(*(compre_buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.8,0.8,batch, recoding.clone());
+		let mut rec:MABRecodingDaemon<_,DB> = MABRecodingDaemon::new(*(compre_buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.01,0.01,batch, recoding.clone());
 		rec.set_targetCR(tcr);
 		let handle = thread::spawn(move || {
 			println!("Run recoding demon with lossy {}", rec_name );
