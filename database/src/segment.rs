@@ -84,7 +84,8 @@ pub struct Segment<T> {
 	time_lapse: Option<Vec<Duration>>,
 	prev_seg_offset: Option<Duration>,
 	comp_time: usize,
-	size: usize
+	size: usize,
+	comp_runtime:f64
 	//next_seg_offset: Option<Duration>,
 }
 
@@ -102,7 +103,8 @@ impl<T> Segment<T> {
 			time_lapse: time_lapse,
 			prev_seg_offset: next_seg_offset,
 			comp_time: 0,
-			size: size
+			size: size,
+			comp_runtime: 0.0
 		}
 	}
 
@@ -123,6 +125,14 @@ impl<T> Segment<T> {
 
 	pub fn update_comp_times(&mut self) {
 		self.comp_time= self.comp_time+1
+	}
+
+	pub fn get_comp_runtime(&self) -> f64 {
+		self.comp_runtime
+	}
+
+	pub fn set_comp_runtime(&mut self, runtime: f64) {
+		self.comp_runtime= runtime
 	}
 
 	pub fn get_signal(&self) -> SignalId {
@@ -317,7 +327,8 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 			comp_time: 0,
-			size: size
+			size: size,
+			comp_runtime: 0.0
 		}
 
 	}
@@ -353,7 +364,8 @@ impl<'a,T: FFTnum + Serialize + Deserialize<'a>> Segment<T> {
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 			comp_time: 0,
-			size: size
+			size: size,
+			comp_runtime: 0.0
 		}
 
 	}
@@ -390,7 +402,8 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 			comp_time: 0,
-			size: size
+			size: size,
+			comp_runtime: 0.0
 		}
 	}
 
@@ -414,7 +427,8 @@ impl<'a,T: FFTnum + Serialize +Into<f64>+ Deserialize<'a>> Segment<Complex<T>> {
 			time_lapse: self.time_lapse.clone(),
 			prev_seg_offset: self.prev_seg_offset,
 			comp_time: 0,
-			size: size
+			size: size,
+			comp_runtime: 0.0
 		}
 	}
 }
@@ -519,8 +533,9 @@ pub fn paa_compress_and_retain<T>(seg: &Segment<T>, chunk_size: usize) -> Segmen
 		time_lapse: seg.time_lapse.clone(),
 		prev_seg_offset: seg.prev_seg_offset,
 		comp_time: 0,
-		size: size
-	}	
+		size: size,
+		comp_runtime: 0.0
+	}
 }
 
 /* Performs paa compression on the data carried by the segment */
@@ -986,7 +1001,8 @@ fn test_complex_segment_byte_conversion() {
 			time_lapse: Some(vec![]),
 			prev_seg_offset: None,
 			comp_time: 0,
-			size: 0
+			size: 0,
+			comp_runtime: 0.0
 		}).collect();
 
 	let mut converted_segs: Vec<Segment<Complex<f32>>> = segs.iter().map({|seg|
@@ -1019,7 +1035,8 @@ fn test_segment_byte_conversion() {
 			time_lapse: Some(vec![]),
 			prev_seg_offset: None,
 			comp_time: 0,
-			size: 0
+			size: 0,
+			comp_runtime: 0.0
 		}).collect();
 
 	let mut converted_segs: Vec<Segment<f32>> = segs.iter().map({|seg|
@@ -1059,7 +1076,8 @@ fn test_paa_compression() {
 		time_lapse: Some(vec![]),
 				prev_seg_offset: None,
 		comp_time: 0,
-		size: 0
+		size: 0,
+		comp_runtime: 0.0
 	};
 
 	let seg2 = seg1.clone();
@@ -1129,7 +1147,8 @@ fn test_paa_compression_int() {
 		time_lapse: Some(vec![]),
 		prev_seg_offset: None,
 		comp_time: 0,
-		size: 0
+		size: 0,
+		comp_runtime: 0.0
 	};
 
 	let seg2 = seg1.clone();
@@ -1203,7 +1222,8 @@ fn test_fourier() {
 		time_lapse: Some(vec![]),
 		prev_seg_offset: None,
 		comp_time: 0,
-		size: size
+		size: size,
+		comp_runtime: 0.0
 	};
 	let fft = FourierCompress::new(2,10, 0.5);
 	fft.fourier_compress_budget_mut(&mut seg,1.0);

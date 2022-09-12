@@ -373,7 +373,7 @@ impl<'a, T> CompressionMethod<T> for SprintzDoubleCompress
     }
 
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
-        let start = Instant::now();
+
         for seg in segs {
             let binary =  self.encode(seg);
             seg.set_comp(Some(binary));
@@ -381,8 +381,6 @@ impl<'a, T> CompressionMethod<T> for SprintzDoubleCompress
             seg.set_method(Methods::Sprintz(self.scale));
         }
 
-        let duration = start.elapsed();
-//        println!("Time elapsed in sprintz function() is: {:?}", duration);
     }
 
     fn run_decompress(&self, seg: &mut Segment<T>) {

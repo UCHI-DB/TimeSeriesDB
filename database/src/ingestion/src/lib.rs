@@ -1331,7 +1331,7 @@ pub fn run_online_mab_test(config_file: &str, task:&str, comp:&str, recode:&str,
 	}
 
 
-	let batch = 2;
+	let batch = 1;
 
 
 

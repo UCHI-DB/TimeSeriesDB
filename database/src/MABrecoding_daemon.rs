@@ -11,7 +11,7 @@ use crate::methods::compress::CompressionMethod;
 use std::any::Any;
 use std::{fs, thread};
 use std::collections::BTreeMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use num::{FromPrimitive, Num};
 use rand::Rng;
 use rustfft::FFTnum;
@@ -22,7 +22,7 @@ use smartcore::linalg::naive::dense_matrix::DenseMatrix;
 use smartcore::math::num::RealNumber;
 use crate::buffer_pool::BufErr::BufEmpty;
 use crate::compress::buff_lossy::BUFFlossy;
-use crate::methods::Methods;
+use crate::methods::{IsLossless, Methods};
 use crate::compress::split_double::SplitBDDoubleCompress;
 use crate::compress::sprintz::SprintzDoubleCompress;
 use crate::compress::gorilla::{GorillaBDCompress, GorillaCompress};
@@ -138,6 +138,8 @@ impl<T,U> MABRecodingDaemon<T,U>
 		}else {
 			choice = self.bestarms.2;
 		}
+
+		let start = Instant::now();
 		match choice {
 			1 => {
 				let ws = (1.0/self.tcr).ceil() as usize;
@@ -190,6 +192,9 @@ impl<T,U> MABRecodingDaemon<T,U>
 			}
 			_ => {}
 		}
+		let duration = start.elapsed();
+		uncomp_seg.set_comp_runtime(duration.as_secs_f64());
+		// println!("compression runtime: {}",duration.as_secs_f64() );
 	}
 
 	fn lossy_comp (&self, uncomp_seg: &mut Segment<T>) {
@@ -361,7 +366,7 @@ impl<T,U> MABRecodingDaemon<T,U>
 								for seg in &mut segs {
 									cr = seg.get_byte_size().unwrap() as f64/80000.0;
 									// if compression ratio is less than the target, then skip compressing it
-									if cr<=self.tcr{
+									if cr<=self.tcr&&IsLossless(seg.get_method().as_ref().unwrap())==false{
 										continue;
 									}
 

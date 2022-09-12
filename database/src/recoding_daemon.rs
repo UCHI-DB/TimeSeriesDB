@@ -11,7 +11,7 @@ use crate::methods::compress::CompressionMethod;
 use std::any::Any;
 use std::{fs, thread};
 use std::collections::BTreeMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use num::{FromPrimitive, Num};
 use rand::Rng;
 use rustfft::FFTnum;
@@ -23,7 +23,7 @@ use smartcore::math;
 use smartcore::math::num::RealNumber;
 use crate::buffer_pool::BufErr::BufEmpty;
 use crate::compress::buff_lossy::BUFFlossy;
-use crate::methods::Methods;
+use crate::methods::{IsLossless, Methods};
 use crate::compress::split_double::SplitBDDoubleCompress;
 use crate::compress::sprintz::SprintzDoubleCompress;
 use crate::compress::gorilla::{GorillaBDCompress, GorillaCompress};
@@ -171,6 +171,8 @@ impl<T,U> RecodingDaemon<T,U>
 	}
 
 	fn lossy_comp_with_tcr (&self, uncomp_seg: &mut Segment<T>) {
+		let start = Instant::now();
+
 		match self.lossy {
 			Methods::Paa(scale) => {
 				let ws = (1.0/self.tcr).ceil() as usize;
@@ -216,6 +218,9 @@ impl<T,U> RecodingDaemon<T,U>
 			}
 			_ => {}
 		}
+		let duration = start.elapsed();
+		uncomp_seg.set_comp_runtime(duration.as_secs_f64());
+		println!("compression runtime: {}",duration.as_secs_f64() );
 	}
 
 	fn put_seg_in_comp_buf(&self, seg: Segment<T>) -> Result<(),BufErr>
@@ -279,7 +284,7 @@ impl<T,U> RecodingDaemon<T,U>
 								for seg in &mut segs {
 									cr = seg.get_byte_size().unwrap() as f64/80000.0;
 									// if compression ratio is less than the target, then skip compressing it
-									if cr<=self.tcr{
+									if cr<=self.tcr&&IsLossless(seg.get_method().as_ref().unwrap())==false{
 										continue;
 									}
 									// println!("segment key: {:?} with comp time:{}",seg.get_key(),seg.get_comp_times());

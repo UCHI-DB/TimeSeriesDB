@@ -725,6 +725,7 @@ pub struct LRUBuffer<'a, T, U>
     buffer: BTreeMap<SegmentKey, Node<T>>,
     agg_stats: BTreeMap<SegmentKey, AggStats<T>>,
     est_agg_stats: BTreeMap<SegmentKey, AggStats<T>>,
+    comp_runtime: BTreeMap<SegmentKey, f64>,
     file_manager: U,
     buf_size: usize,
     done: bool,
@@ -855,6 +856,7 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                 buffer: BTreeMap::new(),
                 agg_stats: BTreeMap::new(),
                 est_agg_stats: BTreeMap::new(),
+                comp_runtime: BTreeMap::new(),
                 file_manager: file_manager,
                 buf_size: 0,
                 done: false,
@@ -903,6 +905,9 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
             else if task_vec[0]=="sum"{
                 taskid = 4;
             }
+            else if task_vec[0]=="speed"{
+                taskid = 5;
+            }
             println!("task: {}, {}-{} task id: {}", task, task_vec[0],task_vec[1], taskid);
             LRUBuffer {
                 budget: budget,
@@ -911,6 +916,7 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                 tail: None,
                 buffer: BTreeMap::new(),
                 agg_stats: BTreeMap::new(),
+                comp_runtime: BTreeMap::new(),
                 est_agg_stats: BTreeMap::new(),
                 file_manager: file_manager,
                 buf_size: 0,
@@ -919,9 +925,9 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                 plabel: BTreeMap::new(),
                 predictor: model,
                 task: taskid,
-                mab_250: EGreedy::new(4, 0.05, 15.0, UpdateType::Average),
-                mab_125: EGreedy::new(4, 0.05, 15.0, UpdateType::Average),
-                mab_000: EGreedy::new(4, 0.05, 15.0, UpdateType::Average)
+                mab_250: EGreedy::new(4, 0.005, 40.0, UpdateType::Average),
+                mab_125: EGreedy::new(4, 0.001, 40.0, UpdateType::Average),
+                mab_000: EGreedy::new(4, 0.001, 40.0, UpdateType::Average)
             }
         }
 
@@ -937,6 +943,7 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         let mut maxErr = 0.0;
         let mut sumErr = 0.0;
         let nSeg = self.buffer.len();
+        let mut comp_runtime = 0.0;
         let mut estlatestn: AggStats<T> = AggStats {
             max: (T::one()),
             min: (T::one()),
@@ -995,8 +1002,10 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
 
             if cnt<(nSeg-n){
                 let real_agg = self.agg_stats.get(k).unwrap();
+                let runtime = self.comp_runtime.get(k).unwrap();
                 maxErr += num::abs(agg.max.into()-real_agg.max.into())/num::abs(real_agg.max.into());
                 sumErr += num::abs(agg.sum.into()-real_agg.sum.into())/num::abs(real_agg.sum.into());
+                comp_runtime += runtime;
             }
             let plabels = self.plabel.get(k).unwrap();
             let cur_err = Err_Eval(plabels, self.rlabel.get(k).unwrap());
@@ -1065,12 +1074,12 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         // println!("true max: {}, est max: {}",untilnow.max , estuntilnow.max);
         // println!("true nmax: {}, est nmax: {}",latestn.max , estlatestn.max);
         // println!("Aggregation stats (earlies-latest-untilnow): {},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,
-        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{:.4},{:.4},{:.4}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,
+        println!("Aggregation stats (earlies-latest-untilnow): {},{},{},{},{},{},{},{},{},{},{},{},{},{:.4},{:.4},{:.4}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,
                  num::abs((earliestn.max - estearliestn.max) / earliestn.max), num::abs((earliestn.min - estearliestn.min) / earliestn.min),
                  num::abs((earliestn.sum - estearliestn.sum) / earliestn.sum),
                  num::abs((latestn.max - estlatestn.max) / latestn.max), num::abs((latestn.min - estlatestn.min) / latestn.min),
                  num::abs((latestn.sum - estlatestn.sum) / latestn.sum), num::abs((untilnow.max - estuntilnow.max) / untilnow.max),
-                 num::abs((untilnow.min - estuntilnow.min) / untilnow.min), num::abs((untilnow.sum - estuntilnow.sum) / untilnow.sum),maxErr,sumErr,
+                 num::abs((untilnow.min - estuntilnow.min) / untilnow.min), num::abs((untilnow.sum - estuntilnow.sum) / untilnow.sum),maxErr,sumErr,comp_runtime,
                  firstNerr as f64 /labels_of_N as f64, lastNerr as f64 /labels_of_N as f64, totalErr as f64 / total_label as f64
         )
     }
@@ -1200,6 +1209,69 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
             _ => {panic!("lossy compression is not supported by LRU ML query");}
         }
         println!("agg_ML reward: {}", 10.0*mlacc + r*agg);
+
+    }
+
+    fn update_speed_ml_mab(&mut self, m: &Methods, speed: f64, mlacc: f64){
+        let r = 25.0;
+        let mut spd = 1.0-speed;
+
+        let mut ratio = 0.0;
+        let c = 1.0;
+        match m {
+            Methods::Bufflossy(_,bits) => {
+                // only for bits >= 8, fall back to rrd otherwise
+                ratio = (*bits) as f64/64.0;
+                if ratio>=0.25 {
+                    self.mab_250.update(0, 10.0*mlacc + r*spd);
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(0, 10.0*mlacc + r*spd);
+                }
+            }
+            Methods::Rrd_sample => {
+                // only for 1 sample, so no value for mab125 and mab 250.
+                ratio = 1.0/10000.0;
+                self.mab_000.update(0, 10.0*mlacc + r*spd);
+            }
+            Methods::Paa(wsize) => {
+                ratio = 1.0/(*wsize) as f64;
+                if ratio>=0.25 {
+                    self.mab_250.update(1, 10.0*mlacc + r*spd);
+                }
+                else if ratio >=0.125{
+                    self.mab_125.update(1, 10.0*mlacc + r*spd);
+                }
+                else{
+                    self.mab_000.update(1, 10.0*mlacc + r*spd);
+                }
+            }
+            Methods::Fourier(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(2, 10.0*mlacc + r*spd);
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(2, 10.0*mlacc + r*spd);
+                }
+                else{
+                    self.mab_000.update(2, 10.0*mlacc + r*spd);
+                }
+
+            }
+            Methods::Pla(ratio) => {
+                if *ratio>=0.25 {
+                    self.mab_250.update(3, 10.0*mlacc + r*spd);
+                }
+                else if *ratio >=0.125{
+                    self.mab_125.update(3, 10.0*mlacc + r*spd);
+                }
+                else{
+                    self.mab_000.update(3, 10.0*mlacc + r*spd);
+                }
+            }
+            _ => {panic!("lossy compression is not supported by LRU ML query");}
+        }
+        println!("speedd_ML reward: {}", 10.0*mlacc + r*spd);
 
     }
 
@@ -1360,6 +1432,8 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         // update aggstats and ML labels for query accuracy profiling
         let entry_size = seg.get_size();
         let size = seg.get_byte_size().unwrap();
+        let comp_runtime = seg.get_comp_runtime();
+        self.comp_runtime.insert(key, comp_runtime);
         // println!("recode method: {:?}",seg.get_method().as_ref().unwrap());
         if IsLossless(seg.get_method().as_ref().unwrap())==true {
             // println!("buffer size: {}, agg stats size: {}",self.buffer.len(), self.agg_stats.len() );
@@ -1410,6 +1484,10 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                 let agg = self.agg_stats.get(&key).unwrap();
                 let sum = agg.sum.into();
                 self.update_agg_ml_mab(seg.get_method().as_ref().unwrap(),num::abs((sum - estsum) / sum),acc);
+            }
+            else if self.task==5 {
+                let &comp_runtime = &seg.get_comp_runtime();
+                self.update_speed_ml_mab(seg.get_method().as_ref().unwrap(),comp_runtime,acc);
             }
         }
 
