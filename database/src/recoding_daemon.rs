@@ -219,8 +219,8 @@ impl<T,U> RecodingDaemon<T,U>
 			_ => {}
 		}
 		let duration = start.elapsed();
-		uncomp_seg.set_comp_runtime(duration.as_secs_f64());
-		println!("compression runtime: {}",duration.as_secs_f64() );
+		uncomp_seg.set_comp_runtime(1.0/duration.as_secs_f64());
+		// println!("compression runtime: {}",duration.as_secs_f64() );
 	}
 
 	fn put_seg_in_comp_buf(&self, seg: Segment<T>) -> Result<(),BufErr>

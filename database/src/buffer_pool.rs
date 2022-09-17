@@ -926,7 +926,7 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                 predictor: model,
                 task: taskid,
                 mab_250: EGreedy::new(4, 0.005, 40.0, UpdateType::Average),
-                mab_125: EGreedy::new(4, 0.001, 40.0, UpdateType::Average),
+                mab_125: EGreedy::new(4, 0.005, 40.0, UpdateType::Average),
                 mab_000: EGreedy::new(4, 0.001, 40.0, UpdateType::Average)
             }
         }
@@ -997,6 +997,7 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         }
 
         cnt = 0;
+        let mut speedcnt =0;
         for (k, v) in self.est_agg_stats.iter().rev() {
             let agg = v;
 
@@ -1005,7 +1006,11 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                 let runtime = self.comp_runtime.get(k).unwrap();
                 maxErr += num::abs(agg.max.into()-real_agg.max.into())/num::abs(real_agg.max.into());
                 sumErr += num::abs(agg.sum.into()-real_agg.sum.into())/num::abs(real_agg.sum.into());
-                comp_runtime += runtime;
+                if *runtime!=0.0{
+                    comp_runtime += runtime;
+                    speedcnt += 1;
+                }
+
             }
             let plabels = self.plabel.get(k).unwrap();
             let cur_err = Err_Eval(plabels, self.rlabel.get(k).unwrap());
@@ -1030,6 +1035,13 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         }
         maxErr = maxErr/(nSeg-n) as f64;
         sumErr = sumErr/(nSeg-n) as f64;
+
+        if speedcnt==0{
+            comp_runtime = 0.0;
+        }
+        else {
+            comp_runtime = comp_runtime/speedcnt as f64;
+        }
 
         // calculate the earliest N
         cnt = 0;
@@ -1143,7 +1155,7 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
         println!("agg_ML reward: {}", acc/(c+ratio));
     }
 
-    fn update_agg_ml_mab(&mut self, m: &Methods, aggacc: f64, mlacc: f64){
+    fn update_agg_ml_mab(&mut self, m: &Methods, key: &SegmentKey, aggacc: f64, mlacc: f64){
         let r = 0.3;
         let mut agg = 0.0;
         if aggacc==0.0{
@@ -1155,6 +1167,9 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
 
         let mut ratio = 0.0;
         let c = 1.0;
+
+        self.comp_runtime.insert(key.clone(), 10.0*mlacc + r*agg);
+
         match m {
             Methods::Bufflossy(_,bits) => {
                 // only for bits >= 8, fall back to rrd otherwise
@@ -1213,65 +1228,65 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
     }
 
     fn update_speed_ml_mab(&mut self, m: &Methods, speed: f64, mlacc: f64){
-        let r = 25.0;
-        let mut spd = 1.0-speed;
+        let r = 1.1;
+        let mut spd = speed/200000.0;
+
 
         let mut ratio = 0.0;
-        let c = 1.0;
         match m {
             Methods::Bufflossy(_,bits) => {
                 // only for bits >= 8, fall back to rrd otherwise
                 ratio = (*bits) as f64/64.0;
                 if ratio>=0.25 {
-                    self.mab_250.update(0, 10.0*mlacc + r*spd);
+                    self.mab_250.update(0, 1.0*mlacc + r*spd);
                 }
                 else if ratio >=0.125{
-                    self.mab_125.update(0, 10.0*mlacc + r*spd);
+                    self.mab_125.update(0, 1.0*mlacc + r*spd);
                 }
             }
             Methods::Rrd_sample => {
                 // only for 1 sample, so no value for mab125 and mab 250.
                 ratio = 1.0/10000.0;
-                self.mab_000.update(0, 10.0*mlacc + r*spd);
+                self.mab_000.update(0, 1.0*mlacc + r*spd);
             }
             Methods::Paa(wsize) => {
                 ratio = 1.0/(*wsize) as f64;
                 if ratio>=0.25 {
-                    self.mab_250.update(1, 10.0*mlacc + r*spd);
+                    self.mab_250.update(1, 1.0*mlacc + r*spd);
                 }
                 else if ratio >=0.125{
-                    self.mab_125.update(1, 10.0*mlacc + r*spd);
+                    self.mab_125.update(1, 1.0*mlacc + r*spd);
                 }
                 else{
-                    self.mab_000.update(1, 10.0*mlacc + r*spd);
+                    self.mab_000.update(1, 1.0*mlacc + r*spd);
                 }
             }
             Methods::Fourier(ratio) => {
                 if *ratio>=0.25 {
-                    self.mab_250.update(2, 10.0*mlacc + r*spd);
+                    self.mab_250.update(2, 1.0*mlacc + r*spd);
                 }
                 else if *ratio >=0.125{
-                    self.mab_125.update(2, 10.0*mlacc + r*spd);
+                    self.mab_125.update(2, 1.0*mlacc + r*spd);
                 }
                 else{
-                    self.mab_000.update(2, 10.0*mlacc + r*spd);
+                    self.mab_000.update(2, 1.0*mlacc + r*spd);
                 }
 
             }
             Methods::Pla(ratio) => {
                 if *ratio>=0.25 {
-                    self.mab_250.update(3, 10.0*mlacc + r*spd);
+                    self.mab_250.update(3, 1.0*mlacc + r*spd);
                 }
                 else if *ratio >=0.125{
-                    self.mab_125.update(3, 10.0*mlacc + r*spd);
+                    self.mab_125.update(3, 1.0*mlacc + r*spd);
                 }
                 else{
-                    self.mab_000.update(3, 10.0*mlacc + r*spd);
+                    self.mab_000.update(3, 1.0*mlacc + r*spd);
                 }
             }
             _ => {panic!("lossy compression is not supported by LRU ML query");}
         }
-        println!("speedd_ML reward: {}", 10.0*mlacc + r*spd);
+        println!("speedd_ML reward: {}", 1.0*mlacc + r*spd);
 
     }
 
@@ -1478,16 +1493,17 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
             else if self.task==3 {
                 let agg = self.agg_stats.get(&key).unwrap();
                 let max= agg.max.into();
-                self.update_agg_ml_mab(seg.get_method().as_ref().unwrap(),num::abs((max - estmax) / max),acc);
+                self.update_agg_ml_mab(seg.get_method().as_ref().unwrap(), &key,num::abs((max - estmax) / max),acc);
             }
             else if self.task==4 {
                 let agg = self.agg_stats.get(&key).unwrap();
                 let sum = agg.sum.into();
-                self.update_agg_ml_mab(seg.get_method().as_ref().unwrap(),num::abs((sum - estsum) / sum),acc);
+                self.update_agg_ml_mab(seg.get_method().as_ref().unwrap(), &key,num::abs((sum - estsum) / sum),acc);
             }
             else if self.task==5 {
                 let &comp_runtime = &seg.get_comp_runtime();
                 self.update_speed_ml_mab(seg.get_method().as_ref().unwrap(),comp_runtime,acc);
+                self.comp_runtime.insert(key, 1.1*comp_runtime/200000.0 + acc);
             }
         }
 
