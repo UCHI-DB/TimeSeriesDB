@@ -864,9 +864,9 @@ impl<'a, T, U> LRUBuffer<'a, T, U>
                 plabel: BTreeMap::new(),
                 predictor: model,
                 task: taskid,
-                mab_250: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
-                mab_125: EGreedy::new(4, 0.1, 0.0, UpdateType::Average),
-                mab_000: EGreedy::new(4, 0.1, 0.0, UpdateType::Average)
+                mab_250: EGreedy::new(4, 0.01, 2.0, UpdateType::Average),
+                mab_125: EGreedy::new(4, 0.01, 2.0, UpdateType::Average),
+                mab_000: EGreedy::new(4, 0.01, 2.0, UpdateType::Average)
             }
         }
         else{

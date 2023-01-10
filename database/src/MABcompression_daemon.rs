@@ -51,7 +51,7 @@ impl<T,U,F> MABCompressionDaemon<T,U,F>
 			uncomp_threshold: uncomp_threshold,
 			processed: 0,
 			compress_method: compress_method,
-			mab: EGreedy::new(5, 0.1, 0.0, UpdateType::Average)
+			mab: EGreedy::new(5, 0.01, 20.0, UpdateType::Average)
 		}
 	}
 
@@ -157,12 +157,12 @@ impl<T,U,F> MABCompressionDaemon<T,U,F>
 							println!("MAB best arm: {}", action);
 							match action {
 								0 => {
-									// let ccomp = SplitBDDoubleCompress::new(10, batch, 10000);
-									let ccomp =  SnappyCompress::new(10, batch);
+									let ccomp = SplitBDDoubleCompress::new(10, batch, 10000);
+									// let ccomp =  SnappyCompress::new(10, batch);
 									ccomp.run_compress(&mut segs);},
 								1 => {
-									// let ccomp = SprintzDoubleCompress::new(10, batch, 10000);
-									let ccomp =  SnappyCompress::new(10, batch);
+									let ccomp = SprintzDoubleCompress::new(10, batch, 10000);
+									// let ccomp =  SnappyCompress::new(10, batch);
 									ccomp.run_compress(&mut segs); },
 								2 => {
 									let ccomp =  SnappyCompress::new(10, batch);
