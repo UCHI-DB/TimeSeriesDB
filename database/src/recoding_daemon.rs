@@ -110,7 +110,7 @@ impl<T,U> RecodingDaemon<T,U>
 								};
 								if self.tcr!=0.0{
 									let mut rng = rand::thread_rng();
-									let n = rng.gen_range(0, 8);
+									let n = rng.gen_range(0, 4);
 									if n==1{
 										buf.run_query();
 									}
@@ -219,6 +219,7 @@ impl<T,U> RecodingDaemon<T,U>
 			_ => {}
 		}
 		let duration = start.elapsed();
+		// This is actually the compression throughput
 		uncomp_seg.set_comp_runtime(1.0/duration.as_secs_f64());
 		// println!("compression runtime: {}",duration.as_secs_f64() );
 	}
@@ -336,6 +337,8 @@ impl<T,U> RecodingDaemon<T,U>
 											Methods::Rrd_sample => {
 												// do nothing
 											}
+											Methods::Zlib => {
+											},
 
 											_ => todo!()
 										}

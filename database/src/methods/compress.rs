@@ -624,18 +624,20 @@ impl<'a, T> CompressionMethod<T> for DeflateCompress
 #[derive(Clone)]
 pub struct ZlibCompress {
     chunksize: usize,
-    batchsize: usize
+    batchsize: usize,
+    comp_level: usize
 }
 
 impl ZlibCompress {
-    pub fn new(chunksize: usize, batchsize: usize) -> Self {
-        ZlibCompress { chunksize, batchsize }
+    pub fn new(chunksize: usize, batchsize: usize, comp_level:usize) -> Self {
+        ZlibCompress { chunksize, batchsize, comp_level }
     }
 
     // Compress a sample string and print it after transformation.
-    fn encode<'a,T>(&self, seg: &mut Segment<T>)
+    fn encode<'a,T>(&self, seg: &mut Segment<T>) -> Vec<u8>
         where T: Serialize + Deserialize<'a>{
-        let mut e = ZlibEncoder::new(Vec::new(), Compression::default());
+        let mut e = ZlibEncoder::new(Vec::new(), Compression::new(self.comp_level as u32));
+        println!("\n Zlib compression level: {}", self.comp_level);
         let origin_bin =seg.convert_to_bytes().unwrap();
         info!("original size:{}", origin_bin.len());
         e.write_all(origin_bin.as_slice()).unwrap();
@@ -644,6 +646,7 @@ impl ZlibCompress {
         //println!("{}", decode_reader(bytes).unwrap());
         let ratio = bytes.len() as f64 /origin_bin.len() as f64;
         print!("{}",ratio);
+        bytes
     }
 
     // Uncompresses a zl Encoded vector of bytes and returns a string or error
@@ -654,10 +657,29 @@ impl ZlibCompress {
         zl.read_to_string(&mut s)?;
         Ok(s)
     }
+
+    pub(crate) fn decode<T>(&self, bytes: &Vec<u8>) -> Vec<T>
+        where T: FromPrimitive {
+        let mut zl = ZlibDecoder::new(&bytes[..]);
+        let mut s:Vec<u8> = Vec::new();
+        let ct= zl.read_to_end(&mut s).unwrap();
+        let mut expected_datapoints  = Vec::new();
+        info!("size read:{}, original size:{}", ct, s.len());
+        match Segment::convert_from_bytes(&s) {
+            Ok(new_seg) => {
+                for &v in new_seg.get_data(){
+                    expected_datapoints.push(FromPrimitive::from_f64(v).unwrap());
+                }
+            },
+            _           => panic!("Failed to convert bytes into segment"),
+        }
+        // println!("Number of scan items:{}", expected_datapoints.len());
+        expected_datapoints
+    }
 }
 
 impl<'a, T> CompressionMethod<T> for ZlibCompress
-    where T: Serialize + Deserialize<'a>{
+    where T: Serialize + Deserialize<'a> + FromPrimitive{
     fn get_segments(&self) {
         unimplemented!()
     }
@@ -669,14 +691,21 @@ impl<'a, T> CompressionMethod<T> for ZlibCompress
     fn run_compress<'b>(&self, segs: &mut Vec<Segment<T>>) {
         let start = Instant::now();
         for seg in segs {
-            self.encode(seg);
+            let binary = self.encode(seg);
+            seg.set_comp(Some(binary));
+            seg.set_data(Vec::new());
+            seg.set_method(Methods::Zlib);
         }
         let duration = start.elapsed();
         println!("Time elapsed in Zlib function() is: {:?}", duration);
     }
 
-    fn run_decompress(&self, segs: &mut Segment<T>) {
-        unimplemented!()
+    fn run_decompress(&self, seg: &mut Segment<T>) {
+        let vec =  self.decode(seg.get_comp());
+        seg.set_comp(None);
+        seg.set_data(vec);
+        seg.set_method(Methods::Zlib);
+
     }
 }
 
@@ -1751,7 +1780,8 @@ pub fn test_zlib_compress_on_file<'a,T>(file:&str)
     let file_vec: Vec<T> = file_iter.unwrap().collect();
     let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);
     let start = Instant::now();
-    let comp = ZlibCompress::new(10,10);
+    // using zlib default level: 6
+    let comp = ZlibCompress::new(10,10, 6);
     let compressed = comp.encode(&mut seg);
     let duration = start.elapsed();
     info!("Time elapsed in zlib compress function() is: {:?}", duration);
@@ -1767,7 +1797,8 @@ pub fn test_zlib_compress_on_int_file(file:&str,scl:i32) {
     let file_vec: Vec<i32> = file_iter.unwrap().collect();
     let mut seg = Segment::new(None,SystemTime::now(),0,file_vec.clone(),None,None);
     let start = Instant::now();
-    let comp = ZlibCompress::new(10,10);
+    // use zlib default level: 6
+    let comp = ZlibCompress::new(10,10, 6);
     let compressed = comp.encode(&mut seg);
     let duration = start.elapsed();
     info!("Time elapsed in zlib compress function() is: {:?}", duration);

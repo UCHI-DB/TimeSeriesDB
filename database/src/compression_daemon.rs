@@ -95,6 +95,8 @@ impl<T,U,F> CompressionDaemon<T,U,F>
 		match self.comp_seg_buf.lock() {
 			Ok(mut buf) => {
 				for seg in segs{
+					let cr = seg.get_byte_size().unwrap() as f64 / 80000.0;
+					println!("First time compression: {},{}",SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_micros() as f64/1000000.0,  cr);
 					match buf.put(seg) {
 						Ok(_) => continue,
 						Err(_) => return Err(BufErr::FailPut),

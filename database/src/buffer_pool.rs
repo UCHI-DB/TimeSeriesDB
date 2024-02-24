@@ -26,7 +26,7 @@ use smartcore::naive_bayes::gaussian::GaussianNB;
 use smartcore::neighbors::knn_classifier::KNNClassifier;
 use smartcore::tree::decision_tree_classifier::DecisionTreeClassifier;
 
-use crate::{CompressionMethod, FourierCompress, GorillaCompress, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress};
+use crate::{CompressionMethod, FourierCompress, GorillaCompress, GZipCompress, PAACompress, segment, SnappyCompress, SprintzDoubleCompress, ZlibCompress};
 
 use segment::{Segment, SegmentKey};
 use crate::compress::buff_lossy::BUFFlossy;
@@ -658,6 +658,10 @@ pub fn Get_Decomp<T: Num + FromPrimitive + Copy + Send + FFTnum + Into<f64> >(se
         }
         Methods::Gzip => {
             let pre = GZipCompress::new(10, 20);
+            vec = pre.decode(seg.get_comp());
+        }
+        Methods::Zlib => {
+            let pre = ZlibCompress::new(10, 20, 5);
             vec = pre.decode(seg.get_comp());
         }
         Methods::Paa(wsize) => {

@@ -1371,6 +1371,15 @@ pub fn run_online_mab_test(config_file: &str, task:&str, comp:&str, recode:&str,
 		"bufflossy" => {Methods::Bufflossy(10000, 32)},
 		_ => {Methods::Uncompr}
 	};
+	let mut comp = comp;
+	let mut level: usize = 0;
+	let comp_level = comp.split("_").collect::<Vec<&str>>();
+	if comp_level.len()>1{
+		comp = comp_level[0];
+		level = comp_level[1].parse::<usize>().unwrap();
+
+	}
+
 
 	for _x in 0..num_comp {
 		println!("Init MAB compression demon {}", _x);
@@ -1438,7 +1447,15 @@ pub fn run_online_mab_test(config_file: &str, task:&str, comp:&str, recode:&str,
 				});
 				comp_handlers.push(handle);
 			}
-
+			"zlib" => {
+				let mut compress_daemon:MABCompressionDaemon<_,DB,_> = MABCompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,ZlibCompress::new(10,batch, level));
+				let handle = thread::spawn(move || {
+					println!("Run zlib compression demon with level {}", level);
+					compress_daemon.run();
+					println!("segment commpressed: {}", compress_daemon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
 			"kernel" => {
 				let mut knl = Kernel::new(array![[1.0, 1.0],[1.0, 1.0]],1,4,30);
 				if testdict != None{
@@ -1853,6 +1870,15 @@ pub fn run_online_test(config_file: &str, task:&str, comp:&str, recode:&str, num
 		"bufflossy" => {Methods::Bufflossy(10000, 32)},
 		_ => {Methods::Uncompr}
 	};
+	let mut comp = comp;
+	let mut level: usize = 0;
+	let comp_level = comp.split("_").collect::<Vec<&str>>();
+	if comp_level.len()>1{
+		comp = comp_level[0];
+		level = comp_level[1].parse::<usize>().unwrap();
+		println!("compression {} with level {}",comp, level);
+	}
+
 
 	for _x in 0..num_comp {
 		match comp{
@@ -1914,6 +1940,15 @@ pub fn run_online_test(config_file: &str, task:&str, comp:&str, recode:&str, num
 				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,GZipCompress::new(10,batch));
 				let handle = thread::spawn(move || {
 					println!("Run gzip compression demon");
+					compress_daemon.run();
+					println!("segment commpressed: {}", compress_daemon.get_processed() );
+				});
+				comp_handlers.push(handle);
+			}
+			"zlib" => {
+				let mut compress_daemon:CompressionDaemon<_,DB,_> = CompressionDaemon::new(*(buf_option.clone().unwrap()),*(compre_buf_option.clone().unwrap()),None,0.1,0.0,ZlibCompress::new(10,batch, level));
+				let handle = thread::spawn(move || {
+					println!("Run zlib compression demon with level {}", level);
 					compress_daemon.run();
 					println!("segment commpressed: {}", compress_daemon.get_processed() );
 				});

@@ -96,7 +96,7 @@ impl<T,U> MABRecodingDaemon<T,U>
 								if segs.len() == self.batch {
 									if self.tcr!=0.0{
 										let mut rng = rand::thread_rng();
-										let n = rng.gen_range(0, 8);
+										let n = rng.gen_range(0, 4);
 										if n==1{
 											buf.run_query();
 										}
@@ -415,6 +415,9 @@ impl<T,U> MABRecodingDaemon<T,U>
 
 										},
 										Methods::Rrd_sample => {
+											// do nothing
+										}
+										Methods::Zlib => {
 											// do nothing
 										}
 										_ => todo!()
